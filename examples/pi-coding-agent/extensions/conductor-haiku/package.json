@@ -1,0 +1,33 @@
+{
+  "name": "conductor-haiku",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Haiku conductor — TS-only Pi extension + MCP stdio server that drive the Haiku desktop via native helpers (input_send, window_lister, screenshot, conductor_input input_server add-on).",
+  "type": "module",
+  "main": "index.ts",
+  "bin": {
+    "conductor-haiku-mcp": "./mcp-server.ts"
+  },
+  "scripts": {
+    "build": "tsc --outDir dist --module nodenext --moduleResolution nodenext --target ES2022 --strict --esModuleInterop --skipLibCheck tools.ts mcp-server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.3.0"
+  }
+}

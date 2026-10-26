@@ -1,0 +1,17 @@
+// opencode: ~/.config/opencode/opencode.json(c), or opencode.json(c) in a
+// project. Note the differences from mcpServers: the command is an array and
+// env is "environment". Leave "timeout" out: in this shape it also caps every
+// tool call. Delete "environment" if you have no grounder.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "conductor-desktop": {
+      "type": "local",
+      "command": ["/absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop"],
+      "environment": {
+        "CONDUCTOR_DESKTOP_GROUNDER_URL": "http://127.0.0.1:8080"
+      },
+      "enabled": true
+    }
+  }
+}

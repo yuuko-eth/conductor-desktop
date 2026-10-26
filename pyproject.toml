@@ -1,0 +1,194 @@
+[project]
+name = "conductor-desktop"
+version = "0.1.0"
+description = "Conductor Desktop — desktop/mobile/web automation server speaking the Model Context Protocol"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "yuuko-eth" },
+]
+keywords = ["mcp", "automation", "desktop", "mobile", "web", "claude", "agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: POSIX :: BSD :: FreeBSD",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Operating System",
+]
+# <3.15: pywin32 has no 3.15 wheels yet, and uv picks
+# the newest Python it can, so a fresh Windows install failed to resolve.
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    # uvicorn and starlette also come with mcp (its HTTP transports); they
+    # are listed because the dashboard imports them directly.
+    "uvicorn>=0.34",
+    "starlette>=0.27",
+    "psutil>=6.0",
+    "mss>=9.0",
+    "pillow>=10.0",
+    "pystray>=0.19",
+    "httpx>=0.28",
+    # MCP protocol
+    # mcp 2.x renamed mcp.server.fastmcp (FastMCP → MCPServer); a fresh
+    # install picked 2.2 and the server failed to import.
+    "mcp>=1.2,<2",
+    # mcp needs cryptography (through pyjwt[crypto]), and cryptography has
+    # shipped no Windows Arm64 wheel since 46.0.3: a newer one builds from
+    # source, which needs Rust and MSVC and stalled on Windows 11 Arm.
+    # The second line only makes the requirements differ: without it uv
+    # locks one version for every platform, and that was 46.0.3 everywhere.
+    "cryptography<=46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
+    "cryptography>46.0.3; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    # Chrome DevTools Protocol client (web_eval / web_crop)
+    "websockets>=12.0",
+    # Linux-only (D-Bus for AT-SPI2 backends)
+    "dbus-fast>=4.0.0; sys_platform == 'linux'",
+    # PyGObject: use system python3-gi (apt install python3-gi).
+    # Building from PyPI requires libgirepository-2.0-dev (Ubuntu 24.04+).
+    # If you need it via pip on 24.04+: pip install pygobject>=3.50
+    #
+    # macOS-only — perception delta channel and AX tree-walk both need
+    # ApplicationServices for AX*UIElement / AXObserverCreate. Top-level
+    # because perception.deltas.macos_observer is imported on every macOS
+    # MCP startup. It pulls in pyobjc-core, Cocoa and Quartz, so a bare
+    # `uv sync` has everything the macOS backend imports.
+    "pyobjc-framework-applicationservices>=12.1; sys_platform == 'darwin'",
+    # Windows-only — UI Automation for the ui_* tools (pywinauto) and the
+    # win32 APIs the backend imports on every call (pywin32). Top-level so a
+    # bare `uv sync` is complete: as an extra, a sync without it installed
+    # fine and then failed at import.
+    "pywinauto>=0.6.8; sys_platform == 'win32'",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+linux-x11 = []       # wmctrl, xdotool, xclip via system packages; AT-SPI2 via gi
+linux-wayland = []   # wlrctl, wl-clipboard via system packages; AT-SPI2 via gi
+# macos and windows add nothing over the platform dependencies above; kept so
+# older instructions (`uv sync --extra macos`) still work.
+macos = [
+    "pyobjc-core>=10.0",
+    "pyobjc-framework-Cocoa>=10.0",
+    "pyobjc-framework-Quartz>=10.0",
+    "pyobjc-framework-ApplicationServices>=10.0",
+]
+windows = [
+    "pywinauto>=0.6.8",
+    "pywin32>=306",
+]
+ui-fuzzy = ["rapidfuzz>=3.0"]  # faster ui_find ranking; stdlib difflib otherwise
+
+[project.urls]
+Homepage = "https://conductor-mcp.io"
+Repository = "https://github.com/yuuko-eth/conductor-desktop"
+Issues = "https://github.com/yuuko-eth/conductor-desktop/issues"
+
+[project.scripts]
+conductor-desktop = "conductor_desktop.server:run"
+conductor-desktop-check = "conductor_desktop.check_permissions:main"
+# Pre-rename names, for launchers and MCP client configs written before it.
+conductor-mcp = "conductor_desktop.server:run"
+conductor-mcp-check = "conductor_desktop.check_permissions:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["conductor_desktop"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "ruff>=0.16.9",
+]
+
+[tool.uv]
+# Allow system site-packages so Linux can use apt's python3-gi (PyGObject)
+# instead of building from PyPI (which needs libgirepository-2.0-dev, Ubuntu 24.04+ only).
+# To enable: uv venv --system-site-packages, or set UV_SYSTEM_SITE_PACKAGES=1.
+
+[tool.uv.pip]
+system = true
+
+[tool.ruff]
+# House style is ~100 columns — 99.5% of the tree already fits. 120 is the hard
+# ceiling CI enforces, which leaves room for the aligned comment blocks the
+# backends use without grandfathering a pile of exemptions.
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes — unused imports/names, shadowing
+    "I",         # import order
+    "UP",        # pyupgrade — modern syntax for the target version
+    "B",         # bugbear — loop-variable capture, mutable defaults
+    "SIM",       # simplify
+    "ASYNC",     # blocking calls in async functions
+    "DTZ",       # naive datetimes (the audit log rotates on UTC)
+    "PLW",       # pylint warnings
+    "RUF",
+    "PERF", "FURB", "PIE", "FLY", "ISC",
+    # A blind `except Exception` must log with exc_info, re-raise, or go
+    # through core.errors.best_effort — the documented way to probe a
+    # desktop that fails in ways the OS doesn't enumerate.
+    "BLE001", "S110", "S112",
+]
+ignore = [
+    "SIM105",   # contextlib.suppress would hide what best_effort logs
+    "RUF059",   # unused unpacked variable — reads worse when renamed to _
+    # The prose in docstrings and the box-drawing section markers use real
+    # em-dashes and arrows on purpose; that is house style, not a typo.
+    "RUF001", "RUF002", "RUF003",
+    # `timeout` on an async def is this codebase's tool-signature convention
+    # (every MCP tool takes one); the rule wants asyncio.timeout at the caller.
+    "ASYNC109",
+    "B905",     # zip(strict=) — worth adopting, but each site needs a think
+    # Module-level singletons (lazy executors, the screenshot counter, the
+    # server state) are set through `global` on purpose — one per process, and
+    # threading them through every call site would be worse.
+    "PLW0603",
+    # Rebinding a loop variable while normalizing it (strip, lower, parse) is
+    # the house idiom for the line/token parsers in the backends.
+    "PLW2901",
+    # Blocking pathlib/os.path calls inside async functions: these are local
+    # stat/exists checks on a screenshot path, microseconds each. Real I/O
+    # goes through a subprocess or a worker thread.
+    "ASYNC240",
+    # `int(round(x))` is deliberate. Ruff infers a float from the annotation,
+    # but several of these carry values that may arrive as NumPy scalars, where
+    # round() is not guaranteed to hand back a Python int.
+    "RUF046",
+    # if/else over a ternary where the branches are long: the ternary ruff
+    # proposes for these three sites runs past the line limit and reads worse.
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests construct odd shapes on purpose, and the smoke scripts are run by hand.
+"tests/*" = ["E501", "E402", "E702", "PLW", "RUF012", "BLE001", "S110", "S112"]
+# Hand-run harnesses and benchmarks: one-liner ifs, throwaway locals and
+# lambdas in loops are fine in a script you read top to bottom.
+"scripts/*" = ["E501", "E402", "E701", "E702", "E741", "ASYNC", "PLW",
+               "B007", "B023", "F841", "PERF401", "SIM115", "RUF012",
+               "BLE001", "S110", "S112"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["conductor_desktop"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 10

@@ -1,0 +1,30 @@
+{
+  "_comment": "pi-coding-agent MCP config — install at ~/.pi/agent/mcp.json. Same shape as Claude Code's mcpServers entry, with two pi-only extras: `directTools` (allowlist that lets the agent call these tools directly without going through the orchestrator) and the broader ~/.pi/agent/ tree (settings.json, models.json, extensions/). Edit the command path + grounder URL for your host.",
+  "mcpServers": {
+    "conductor-desktop": {
+      "command": "/path/to/conductor-desktop/.venv/bin/conductor-desktop",
+      "args": [],
+      "env": {
+        "CONDUCTOR_DESKTOP_GROUNDER_URL": "http://127.0.0.1:8080",
+        "CONDUCTOR_DESKTOP_BACKEND": "resident",
+        "CONDUCTOR_DESKTOP_AUTO_SCREENSHOT": "true",
+        "CONDUCTOR_DESKTOP_SCREENSHOT_MAX_WIDTH": "1280",
+        "CONDUCTOR_DESKTOP_SCREENSHOT_MODE": "file",
+        "CONDUCTOR_DESKTOP_TOOL_TIMING": "true"
+      },
+      "directTools": [
+        "capture_screen",
+        "read_screen",
+        "locate",
+        "crop",
+        "click",
+        "mouse_move",
+        "scroll",
+        "type_text",
+        "key",
+        "hotkey",
+        "focus_window"
+      ]
+    }
+  }
+}

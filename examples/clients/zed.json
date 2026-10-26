@@ -1,0 +1,12 @@
+{
+  "context_servers": {
+    "conductor-desktop": {
+      "command": "/absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop",
+      "args": [],
+      "env": {
+        "CONDUCTOR_DESKTOP_GROUNDER_URL": "http://127.0.0.1:8080"
+      },
+      "timeout": 120
+    }
+  }
+}

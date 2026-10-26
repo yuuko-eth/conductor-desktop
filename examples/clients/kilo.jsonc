@@ -1,0 +1,16 @@
+// Kilo Code (VS Code extension and CLI): ~/.config/kilo/kilo.json(c), or
+// kilo.json(c) / .kilo/kilo.json(c) in a project. Kilo is built on opencode
+// and takes the same shape; its older mcp_settings.json format is gone.
+// Delete "environment" if you have no grounder.
+{
+  "mcp": {
+    "conductor-desktop": {
+      "type": "local",
+      "command": ["/absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop"],
+      "environment": {
+        "CONDUCTOR_DESKTOP_GROUNDER_URL": "http://127.0.0.1:8080"
+      },
+      "enabled": true
+    }
+  }
+}

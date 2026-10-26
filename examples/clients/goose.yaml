@@ -1,0 +1,16 @@
+# goose: add under `extensions:` in ~/.config/goose/config.yaml
+# (Windows: %APPDATA%\Block\goose\config\config.yaml), or run
+# `goose configure` -> Add Extension -> Command-line Extension.
+# args is required, even empty. timeout is in seconds.
+# Delete envs if you have no grounder. Takes effect in new sessions.
+
+extensions:
+  conductor-desktop:
+    type: stdio
+    name: conductor-desktop
+    enabled: true
+    cmd: /absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop
+    args: []
+    envs:
+      CONDUCTOR_DESKTOP_GROUNDER_URL: "http://127.0.0.1:8080"
+    timeout: 300

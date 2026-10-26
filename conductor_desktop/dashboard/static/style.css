@@ -1,0 +1,201 @@
+/* conductor-desktop dashboard — minimal vanilla CSS, no framework. */
+
+:root {
+  --bg: #0e1116;
+  --bg-2: #161b22;
+  --bg-3: #1f2630;
+  --fg: #d6deeb;
+  --fg-2: #8b98a8;
+  --line: #232a36;
+  --accent: #3b82f6;
+  --idle: #4caf50;
+  --observing: #42a5f5;
+  --acting: #ffa726;
+  --errored: #e53935;
+  --paused: #c084fc;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 0.75rem; }
+.brand h1 {
+  margin: 0; font-size: 1.05rem; font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: white;
+  min-width: 5.5rem;
+  text-align: center;
+}
+.state-idle      { background: var(--idle); }
+.state-observing { background: var(--observing); }
+.state-acting    { background: var(--acting); }
+.state-errored   { background: var(--errored); }
+.state-paused    { background: var(--paused); }
+
+nav {
+  display: flex;
+  gap: 0.25rem;
+}
+button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+button:hover { background: var(--bg-3); }
+.tab.active {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+
+main {
+  padding: 1.25rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+dl#state-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1rem;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 0 0 1rem 0;
+}
+dl#state-list dt { color: var(--fg-2); font-weight: 500; }
+dl#state-list dd { margin: 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+th {
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+}
+tr:last-child td { border-bottom: none; }
+td.tool-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+td.input-summary {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--fg-2);
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.tag-acting    { background: rgba(255, 167, 38, 0.18); color: var(--acting); }
+.tag-observing { background: rgba(66, 165, 245, 0.18); color: var(--observing); }
+.tag-ok        { background: rgba(76, 175, 80, 0.18); color: var(--idle); }
+.tag-err       { background: rgba(229, 57, 53, 0.22); color: var(--errored); }
+.tag-flight    { background: rgba(139, 152, 168, 0.18); color: var(--fg-2); }
+
+#config-content {
+  display: grid; gap: 1rem;
+}
+.config-group {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+}
+.config-group h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+.config-row {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  gap: 0.5rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  padding: 0.2rem 0;
+}
+.config-row .ck { color: var(--fg-2); }
+.config-row .cv { color: var(--fg); word-break: break-all; }
+
+.actions {
+  margin-top: 1rem;
+  display: flex; align-items: center; gap: 1rem;
+}
+#perm-test-btn { border: 1px solid var(--line); background: var(--bg-3); }
+#perm-test-result {
+  font-size: 0.8rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.hint {
+  color: var(--fg-2);
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem 0;
+}
+
+footer {
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 1.25rem;
+  color: var(--fg-2);
+  font-size: 0.75rem;
+  text-align: center;
+  background: var(--bg-2);
+}

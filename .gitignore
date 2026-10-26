@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Nuitka output
+dist/
+
+# macOS
+.DS_Store
+
+# Node (example TS extensions install local deps for typecheck)
+node_modules/
+package-lock.json
+
+# Project-scoped MCP config — per-machine paths + grounder URLs
+.mcp.json
+.mcp.json.*
+
+# Credential / key material: never commit.
+*authorized_keys*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Loose screenshots and scratch captures at the repo root. Product art lives
+# in conductor_desktop/assets/.
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+!conductor_desktop/assets/**

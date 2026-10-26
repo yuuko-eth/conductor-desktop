@@ -1,0 +1,14 @@
+# OpenAI Codex: ~/.codex/config.toml (the CLI, the IDE extension and the
+# ChatGPT desktop app share it). Or: codex mcp add conductor-desktop \
+#   --env CONDUCTOR_DESKTOP_GROUNDER_URL=http://127.0.0.1:8080 -- /absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop
+#
+# Codex gives a server 10 s to start and 60 s per tool call by default.
+# wait / wait_for can run 60 s on their own, so both are raised here.
+# Delete the env line if you have no grounder.
+
+[mcp_servers.conductor-desktop]
+command = "/absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop"
+args = []
+env = { CONDUCTOR_DESKTOP_GROUNDER_URL = "http://127.0.0.1:8080" }
+startup_timeout_sec = 30
+tool_timeout_sec = 120

@@ -1,0 +1,21 @@
+# Continue: save as .continue/mcpServers/conductor-desktop.yaml in a workspace,
+# or put the mcpServers list in your main config.yaml. MCP works in agent mode
+# only.
+#
+# Continue rejects image results ("unsupported item of type image"), so this
+# runs the server text-only: actions report a text description of the screen
+# instead of a screenshot. That needs a grounder (it writes the description).
+# The agent should read the screen with read_screen, ui_tree and web_*, and
+# avoid capture_screen and crop, which still return images.
+
+name: conductor-desktop
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: conductor-desktop
+    type: stdio
+    command: /absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop
+    args: []
+    env:
+      CONDUCTOR_DESKTOP_GROUNDER_URL: "http://127.0.0.1:8080"
+      CONDUCTOR_DESKTOP_TEXT_ONLY: "true"

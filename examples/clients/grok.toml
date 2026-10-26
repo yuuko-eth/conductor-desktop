@@ -1,0 +1,12 @@
+# Grok Build (xAI's `grok` CLI): ~/.grok/config.toml, or .grok/config.toml in
+# a project. Or: grok mcp add conductor-desktop -- /absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop
+# (there's no --env flag; add the env line here afterwards).
+#
+# Grok also loads servers from ~/.claude.json, .mcp.json and .cursor/mcp.json,
+# so one you added for Claude Code or Cursor may already be there. Check with
+# `grok mcp list`. Delete the env line if you have no grounder.
+
+[mcp_servers.conductor-desktop]
+command = "/absolute/path/to/conductor-desktop/.venv/bin/conductor-desktop"
+args = []
+env = { CONDUCTOR_DESKTOP_GROUNDER_URL = "http://127.0.0.1:8080" }

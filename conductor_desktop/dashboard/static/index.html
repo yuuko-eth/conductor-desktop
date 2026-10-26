@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>conductor-desktop · dashboard</title>
+  <link rel="stylesheet" href="/dashboard/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span id="state-pill" class="pill state-idle">idle</span>
+      <h1>conductor-desktop</h1>
+    </div>
+    <nav>
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="tools">Tool calls</button>
+      <button class="tab" data-tab="config">Config</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tab-overview" class="tab-panel active">
+      <dl id="state-list"></dl>
+      <div class="actions">
+        <button id="perm-test-btn">Re-run permission test</button>
+        <span id="perm-test-result"></span>
+      </div>
+    </section>
+
+    <section id="tab-tools" class="tab-panel">
+      <p class="hint">Most recent first. The tray icon's recent-calls submenu shows the last 5.</p>
+      <table id="tools-table">
+        <thead>
+          <tr><th>Tool</th><th>Klass</th><th>Status</th><th>Duration</th><th>When</th><th>Args</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-config" class="tab-panel">
+      <p class="hint">Read-only: the settings this server is running with. They come from the environment (<code>CONDUCTOR_DESKTOP_*</code>); change them there and restart <code>conductor-desktop</code>.</p>
+      <div id="config-content"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footer-text">conductor-desktop · dashboard</span>
+  </footer>
+
+  <script src="/dashboard/static/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "uuid": "unsafe-mode-on-login@conductor-desktop",
+  "name": "Conductor Desktop unsafe_mode",
+  "description": "Sets global.context.unsafe_mode = true on session start so conductor-desktop's GNOME backend can call org.gnome.Shell.Eval. Reverts on disable. WARNING: lowers a GNOME security boundary — install only on hosts dedicated to running conductor-desktop.",
+  "shell-version": __SHELL_VERSIONS__,
+  "url": "https://github.com/yuuko-eth/conductor-desktop"
+}

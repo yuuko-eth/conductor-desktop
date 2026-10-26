@@ -1,0 +1,6 @@
+{
+  "lastChangelogVersion": "0.72.1",
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ]
+}
