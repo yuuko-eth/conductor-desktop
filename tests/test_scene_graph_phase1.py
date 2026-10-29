@@ -189,8 +189,18 @@ async def test_x11_list_windows_keeps_whole_and_empty_titles(monkeypatch):
     monkeypatch.setattr(linux_x11, "_stacking_order", nothing)
     monkeypatch.setattr(linux_x11, "_xprop_window", nothing)
     monkeypatch.setattr(linux_x11, "_screens_or_none", lambda: nothing())
-    titles = [w["title"] for w in await linux_x11.list_windows()]
-    assert titles == ["", "notes - Mousepad"]
+    # No xprop: one python-xlib pass, in xprop's text form.
+    monkeypatch.setattr(linux_x11.shutil, "which", lambda _b: None)
+    monkeypatch.setattr(linux_x11, "_xlib_window_props", lambda wids: {
+        0xc00003: {"_NET_WM_WINDOW_TYPE(ATOM)": "_NET_WM_WINDOW_TYPE_DOCK",
+                   "_NET_WM_DESKTOP(CARDINAL)": "4294967295"},
+        0x1600017: {"_NET_WM_STATE(ATOM)": "_NET_WM_STATE_MODAL",
+                    "WM_TRANSIENT_FOR(WINDOW)": "window id # 0x1600004"},
+    })
+    wins = await linux_x11.list_windows()
+    assert [w["title"] for w in wins] == ["", "notes - Mousepad"]
+    assert (wins[0]["layer"], wins[0]["sticky"]) == ("overlay", True)
+    assert (wins[1]["parent_window_id"], wins[1]["modality"]) == ("0x1600004", "window")
 
 
 @pytest.mark.asyncio

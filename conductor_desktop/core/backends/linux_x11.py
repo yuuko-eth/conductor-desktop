@@ -507,6 +507,45 @@ async def _absolute_origins() -> dict[int, tuple[int, int]]:
         return await asyncio.to_thread(_xlib_client_origins)
 
 
+def _xlib_window_props(wids: list[int]) -> dict[int, dict]:
+    """``_xprop_window``'s bundle for every window in ``wids`` through one
+    python-xlib connection, in xprop's text form so the same parsers read it.
+    For hosts without xprop; empty on any failure."""
+    def read(d, X):
+        from Xlib.error import XError
+        names: dict[int, str] = {}
+
+        def atom_names(prop) -> str:
+            for a in prop.value:
+                if a not in names:
+                    names[a] = d.get_atom_name(a)
+            return ", ".join(names[a] for a in prop.value)
+
+        wanted = {name: d.intern_atom(name) for name in (
+            "_NET_WM_WINDOW_TYPE", "_NET_WM_STATE", "_NET_WM_DESKTOP")}
+        out = {}
+        for wid in wids:
+            win = d.create_resource_object("window", wid)
+            props: dict[str, str] = {}
+            try:
+                for name, atom in wanted.items():
+                    prop = win.get_full_property(atom, X.AnyPropertyType)
+                    if prop is None or not len(prop.value):
+                        continue
+                    if name == "_NET_WM_DESKTOP":
+                        props[f"{name}(CARDINAL)"] = str(int(prop.value[0]))
+                    else:
+                        props[f"{name}(ATOM)"] = atom_names(prop)
+                parent = win.get_wm_transient_for()
+            except XError:
+                continue  # closed between the list and the lookup
+            if parent:
+                props["WM_TRANSIENT_FOR(WINDOW)"] = f"window id # {parent.id:#x}"
+            out[wid] = props
+        return out
+    return _xlib_read("window property", read, {})
+
+
 def _xlib_client_origins() -> dict[int, tuple[int, int]]:
     """Each managed client's top-left in root coordinates through python-xlib,
     for hosts without xwininfo. Empty on any failure."""
@@ -592,10 +631,14 @@ async def list_windows(desktop: int | None = None) -> list[dict]:
     # Fetch screens + stacking + per-window xprop in parallel.
     screens_task = asyncio.create_task(_screens_or_none())
     stacking_task = asyncio.create_task(_stacking_order())
-    xprop_tasks = [asyncio.create_task(_xprop_window(r["id"])) for r in raw]
+    if shutil.which("xprop"):
+        xprop_tasks = [asyncio.create_task(_xprop_window(r["id"])) for r in raw]
+        xprops = await asyncio.gather(*xprop_tasks) if xprop_tasks else []
+    else:
+        by_id = await asyncio.to_thread(_xlib_window_props, [r["wid_int"] for r in raw])
+        xprops = [by_id.get(r["wid_int"], {}) for r in raw]
     screens = await screens_task
     stacking = await stacking_task
-    xprops = await asyncio.gather(*xprop_tasks) if xprop_tasks else []
 
     windows = []
     for r, props in zip(raw, xprops):
