@@ -201,13 +201,16 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
     """Run the MCP server with a tray icon. Blocks until quit or transport EOF."""
     import os
 
+    # The child gets NO_AT_BRIDGE in its own env. Not in ours: exec_shell
+    # passes our env on, and every app the agent launched came up with no
+    # accessibility for ui_* to read.
+    if _TRAY_IN_CHILD:
+        return _run_holder_with_tray_child(config, lock)
     # GTK's accessibility bridge would load libatspi into this process for the
     # tray icon and drive it from the tray's thread, while the ui_* tools use
     # libatspi as a client on their own thread; libatspi isn't thread-safe.
     # The icon needs no accessibility of its own.
     os.environ.setdefault("NO_AT_BRIDGE", "1")
-    if _TRAY_IN_CHILD:
-        return _run_holder_with_tray_child(config, lock)
     try:
         import pystray
         from PIL import Image  # noqa: F401

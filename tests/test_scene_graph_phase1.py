@@ -153,3 +153,16 @@ async def test_macos_list_screens_smoke():
     # z is monotonic & non-negative.
     zs = [w["z"] for w in windows]
     assert zs == list(range(len(zs)))
+
+
+@pytest.mark.asyncio
+async def test_x11_stacking_falls_back_to_xlib_without_xprop(monkeypatch):
+    from conductor_desktop.core.backends import linux_x11
+    from conductor_desktop.core.errors import BackendError
+
+    async def no_xprop(cmd, timeout=5):
+        raise BackendError("xprop is not installed (not on PATH)")
+
+    monkeypatch.setattr(linux_x11, "_run", no_xprop)
+    monkeypatch.setattr(linux_x11, "_xlib_stacking_ids", lambda: [0xa00017, 0x1600017])
+    assert await linux_x11._stacking_order() == {0x1600017: 0, 0xa00017: 1}

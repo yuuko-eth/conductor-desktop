@@ -415,27 +415,55 @@ def _xprop_to_layer_state_sticky(props: dict) -> tuple[str, str, bool]:
     return layer, state, sticky
 
 
+def _xlib_stacking_ids() -> list[int]:
+    """_NET_CLIENT_LIST_STACKING through python-xlib (pystray's dependency on
+    Linux), for hosts without xprop. Empty on any failure."""
+    try:
+        from Xlib import X, display
+        from Xlib.error import ConnectionClosedError, DisplayError, XError
+    except ImportError:
+        return []
+    try:
+        d = display.Display()
+    except (DisplayError, OSError) as e:
+        log.debug("python-xlib can't open the display: %s", e)
+        return []
+    try:
+        prop = d.screen().root.get_full_property(
+            d.intern_atom("_NET_CLIENT_LIST_STACKING"), X.AnyPropertyType)
+        return [int(w) for w in prop.value] if prop is not None else []
+    except (XError, ConnectionClosedError) as e:
+        log.debug("python-xlib stacking read failed: %s", e)
+        return []
+    finally:
+        d.close()
+
+
 async def _stacking_order() -> dict[int, int]:
     """Return {window_id_int: z} where z=0 is topmost.
 
     _NET_CLIENT_LIST_STACKING is bottom-to-top per EWMH; we reverse.
+    Read with xprop, else python-xlib: without either every window was z=-1,
+    and the hit test credited points to the full-screen xfdesktop window.
     Empty dict on failure (e.g. no EWMH-compliant WM).
     """
+    ids = []
     try:
         out = await _run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"], timeout=2)
-    except BackendError:
-        return {}
-    # Output: "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0xa00001, 0xa00002, ..."
-    _, _, rhs = out.partition("#")
-    ids = []
-    for tok in rhs.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        try:
-            ids.append(int(tok, 16))
-        except ValueError:
-            continue
+    except BackendError as e:
+        log.debug("xprop stacking read failed (%s); trying python-xlib", e)
+        ids = await asyncio.to_thread(_xlib_stacking_ids)
+    else:
+        # Output: "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0xa00001, 0xa00002, ..."
+        _, _, rhs = out.partition("#")
+        for tok in rhs.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                ids.append(int(tok, 16))
+            except ValueError:
+                continue
     ids.reverse()  # top-first
     return {wid: i for i, wid in enumerate(ids)}
 

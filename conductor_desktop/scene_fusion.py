@@ -68,8 +68,25 @@ def _visible_windows(scene: dict) -> list[dict]:
         and (w.get("layer") or "").lower() not in _NON_OWNER_LAYERS
         and _bounds_ok(w.get("bounds"))
     ]
-    out.sort(key=lambda w: w.get("z") if w.get("z") is not None else 1_000_000)
+    out.sort(key=_front_key)
     return out
+
+
+def z_known(w: dict) -> bool:
+    """Whether the backend knew this window's stacking. X11 and KWin report
+    ``z=-1`` when they couldn't read it (xprop missing or timed out)."""
+    z = w.get("z")
+    return z is not None and z >= 0
+
+
+def _front_key(w: dict) -> tuple:
+    """Known stacking first, front to back; then the unknowns, the focused
+    one first — it's the likeliest to be on top. Sorting a raw ``-1`` ahead of
+    ``z=0`` made the full-screen xfdesktop own every point under xfwm4 when
+    xprop failed."""
+    if z_known(w):
+        return (0, w["z"])
+    return (1, not w.get("focused"))
 
 
 def _owner_of(x: int, y: int, visible: list[dict]) -> dict | None:

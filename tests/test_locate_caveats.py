@@ -81,7 +81,8 @@ def test_hit_outside_every_window_is_flagged(managed):
 
 
 def test_hit_in_a_background_window_names_the_app_and_the_fix(managed):
-    scene = {"windows": {"1": {"id": "1", "focused": True}, "2": {"id": "2", "focused": False}}}
+    scene = {"windows": {"1": {"id": "1", "focused": True, "z": 0},
+                         "2": {"id": "2", "focused": False, "z": 1}}}
     warn = observation.grounding_caveats(
         True, {"w": "2", "app": "Terminal", "focused": False}, scene)
     assert any("background window (Terminal)" in w and "focus_window" in w
@@ -257,3 +258,12 @@ def test_managed_grounder_flags_point_hits():
         timeout_env="X", http=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
     els = asyncio.run(g.ground("Zm9v", "the clock"))
     assert [e.point for e in els] == [True, False]
+
+
+def test_no_background_warning_when_the_owner_stacking_is_unknown(managed):
+    """xfwm4 with xprop failing: z=-1 everywhere, so the owner is a guess."""
+    scene = {"windows": {"1": {"id": "1", "focused": True, "z": -1},
+                         "2": {"id": "2", "focused": False, "z": -1}}}
+    warn = observation.grounding_caveats(
+        True, {"w": "2", "app": "xfdesktop", "focused": False}, scene)
+    assert not any("background window" in w for w in warn)

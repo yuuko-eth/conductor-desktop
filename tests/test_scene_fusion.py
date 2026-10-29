@@ -176,3 +176,30 @@ def test_clip_rect_to_image_degenerate_returns_none():
     assert clip_rect_to_image([0, 0, 1, 1], (0, 0), 1280, 800, 1280, 800) is None
     assert clip_rect_to_image("nope", (0, 0), 1280, 800, 1280, 800) is None
     assert clip_rect_to_image([0, 0, 100, 100], (0, 0), 1280, 800, 0, 800) is None
+
+
+def test_unknown_stacking_does_not_hand_the_point_to_the_desktop():
+    # xfwm4 with xprop failing: every window z=-1, xfdesktop listed first and
+    # its type unknown. The focused editor under the point must own it.
+    scene = {
+        "screens": {"0": {"index": 0, "bounds": [0, 0, 1280, 800]}},
+        "windows": {
+            "0x00a00017": {
+                "id": "0x00a00017", "title": "Desktop", "process_name": "xfdesktop",
+                "pid": 10, "bounds": [0, 0, 1280, 800], "state": "normal",
+                "focused": False, "z": -1, "layer": "normal",
+            },
+            "0x01600004": {
+                "id": "0x01600004", "title": "notes - Mousepad", "process_name": "mousepad",
+                "pid": 20, "bounds": [100, 50, 800, 600], "state": "normal",
+                "focused": True, "z": -1, "layer": "normal",
+            },
+        },
+    }
+    assert point_context(scene, 293, 69)["w"] == "0x01600004"
+
+
+def test_known_stacking_outranks_unknown():
+    scene = _scene()
+    scene["windows"]["w1"]["z"] = -1   # focused, but its stacking unknown
+    assert point_context(scene, 640, 450)["w"] == "w2"

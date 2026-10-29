@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from ..core.platform_detect import detect_icon_env
 from ..grounder import CoordSpace, Grounder, GrounderError, bbox_to_px, family_is_point_only
-from ..scene_fusion import point_context, screen_origin
+from ..scene_fusion import point_context, screen_origin, z_known
 from ..state import current
 from .capture import capture_for_grounder, mobile_executor
 
@@ -270,6 +270,12 @@ def is_point_hit(e) -> bool:
     return bool(getattr(e, "point", False))
 
 
+def _owner_z_known(ctx: dict, scene: dict | None) -> bool:
+    owner = ((scene or {}).get("windows") or {}).get(ctx.get("w"))
+    # Unit callers pass a ctx without its window in the scene; trust it then.
+    return owner is None or z_known(owner)
+
+
 def grounding_caveats(point_hit: bool, ctx: dict,
                        scene: dict | None) -> list[str]:
     """Agent-facing caveats for a single grounded hit.
@@ -310,7 +316,9 @@ def grounding_caveats(point_hit: bool, ctx: dict,
     # Only when a listed window holds focus: with the Windows Start menu, the
     # taskbar or another unlisted overlay focused, every window under the
     # point is "background" and the warning would send the agent the wrong way.
-    elif ctx and not ctx.get("focused") and any(
+    # And only when the owner's stacking is known: without it the owner is a
+    # guess (xfdesktop, under xfwm4 with xprop failing), not a finding.
+    elif ctx and not ctx.get("focused") and _owner_z_known(ctx, scene) and any(
             w.get("focused") for w in ((scene or {}).get("windows") or {}).values()):
         out.append(
             f"grounded into a background window ({ctx.get('app')}), not the "

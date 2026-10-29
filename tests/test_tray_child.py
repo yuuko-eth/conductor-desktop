@@ -94,3 +94,14 @@ def test_a_server_that_dies_at_startup_takes_the_tray_with_it(fake_tray, monkeyp
     with pytest.raises(RuntimeError, match="refuses to start"):
         tray._run_holder_with_tray_child(Config(), lock=None)
     assert children[0].poll() is not None
+
+
+def test_the_server_env_keeps_accessibility_for_apps_it_launches(fake_tray, monkeypatch):
+    """NO_AT_BRIDGE is the tray child's alone: exec_shell hands our env to the
+    apps the agent starts, and with it set ui_* can't read them."""
+    monkeypatch.delenv("NO_AT_BRIDGE", raising=False)
+    monkeypatch.setattr(tray, "_TRAY_IN_CHILD", True)
+    monkeypatch.setattr(tray, "_run_holder_with_tray_child", lambda config, lock: None)
+    tray.run_holder(Config(), lock=None)
+    import os
+    assert "NO_AT_BRIDGE" not in os.environ
