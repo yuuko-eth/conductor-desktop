@@ -415,28 +415,36 @@ def _xprop_to_layer_state_sticky(props: dict) -> tuple[str, str, bool]:
     return layer, state, sticky
 
 
-def _xlib_stacking_ids() -> list[int]:
-    """_NET_CLIENT_LIST_STACKING through python-xlib (pystray's dependency on
-    Linux), for hosts without xprop. Empty on any failure."""
+def _xlib_read(what: str, read, empty):
+    """``read(display, X)`` on a fresh python-xlib connection (pystray's
+    dependency on Linux), for hosts without x11-utils (xprop, xwininfo).
+    ``empty`` on any failure."""
     try:
         from Xlib import X, display
         from Xlib.error import ConnectionClosedError, DisplayError, XError
     except ImportError:
-        return []
+        return empty
     try:
         d = display.Display()
     except (DisplayError, OSError) as e:
         log.debug("python-xlib can't open the display: %s", e)
-        return []
+        return empty
     try:
+        return read(d, X)
+    except (XError, ConnectionClosedError) as e:
+        log.debug("python-xlib %s read failed: %s", what, e)
+        return empty
+    finally:
+        d.close()
+
+
+def _xlib_stacking_ids() -> list[int]:
+    """_NET_CLIENT_LIST_STACKING through python-xlib. Empty on any failure."""
+    def read(d, X):
         prop = d.screen().root.get_full_property(
             d.intern_atom("_NET_CLIENT_LIST_STACKING"), X.AnyPropertyType)
         return [int(w) for w in prop.value] if prop is not None else []
-    except (XError, ConnectionClosedError) as e:
-        log.debug("python-xlib stacking read failed: %s", e)
-        return []
-    finally:
-        d.close()
+    return _xlib_read("stacking", read, [])
 
 
 async def _stacking_order() -> dict[int, int]:
@@ -491,12 +499,31 @@ async def _absolute_origins() -> dict[int, tuple[int, int]]:
     xwininfo is missing or fails; wmctrl's position stands then.
     """
     if not shutil.which("xwininfo"):
-        return {}
+        return await asyncio.to_thread(_xlib_client_origins)
     try:
         return _parse_tree_origins(await _run(["xwininfo", "-root", "-tree"], timeout=2))
     except BackendError as e:
-        log.debug("xwininfo -tree failed: %s", e)
-        return {}
+        log.debug("xwininfo -tree failed (%s); trying python-xlib", e)
+        return await asyncio.to_thread(_xlib_client_origins)
+
+
+def _xlib_client_origins() -> dict[int, tuple[int, int]]:
+    """Each managed client's top-left in root coordinates through python-xlib,
+    for hosts without xwininfo. Empty on any failure."""
+    def read(d, X):
+        from Xlib.error import XError
+        root = d.screen().root
+        prop = root.get_full_property(d.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType)
+        origins = {}
+        for wid in (prop.value if prop is not None else []):
+            try:
+                # Root's (0,0) in the window's coordinates is minus its origin.
+                t = d.create_resource_object("window", int(wid)).translate_coords(root, 0, 0)
+            except XError:
+                continue  # closed between the list and the lookup
+            origins[int(wid)] = (-t.x, -t.y)
+        return origins
+    return _xlib_read("origin", read, {})
 
 
 async def list_windows(desktop: int | None = None) -> list[dict]:
@@ -520,8 +547,10 @@ async def list_windows(desktop: int | None = None) -> list[dict]:
     # Parse wmctrl output first (cheap), then enrich in parallel.
     raw: list[dict] = []
     for line in output.strip().splitlines():
-        parts = line.split(None, 9)
-        if len(parts) < 9:
+        # id desk pid x y w h host title: the title is the 9th field, may hold
+        # spaces, and is absent for an untitled window.
+        parts = line.split(None, 8)
+        if len(parts) < 8:
             continue
         wid_hex = parts[0]
         desk = int(parts[1])

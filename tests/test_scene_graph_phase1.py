@@ -166,3 +166,37 @@ async def test_x11_stacking_falls_back_to_xlib_without_xprop(monkeypatch):
     monkeypatch.setattr(linux_x11, "_run", no_xprop)
     monkeypatch.setattr(linux_x11, "_xlib_stacking_ids", lambda: [0xa00017, 0x1600017])
     assert await linux_x11._stacking_order() == {0x1600017: 0, 0xa00017: 1}
+
+
+@pytest.mark.asyncio
+async def test_x11_list_windows_keeps_whole_and_empty_titles(monkeypatch):
+    """wmctrl's title is the 9th field: it was cut at its first space, and an
+    untitled window (8 fields) was dropped."""
+    from conductor_desktop.core.backends import linux_x11
+
+    wmctrl = ("0x00c00003 -1 2253   0    0    1920 27   host \n"
+              "0x01600017  0 0      10   37   945  1033 host notes - Mousepad\n")
+
+    async def run(cmd, timeout=5):
+        return wmctrl if cmd[0] == "wmctrl" else "22020119"
+
+    async def nothing(*_a):
+        return {}
+
+    monkeypatch.setattr(linux_x11, "_require_bin", lambda _b: None)
+    monkeypatch.setattr(linux_x11, "_run", run)
+    monkeypatch.setattr(linux_x11, "_absolute_origins", nothing)
+    monkeypatch.setattr(linux_x11, "_stacking_order", nothing)
+    monkeypatch.setattr(linux_x11, "_xprop_window", nothing)
+    monkeypatch.setattr(linux_x11, "_screens_or_none", lambda: nothing())
+    titles = [w["title"] for w in await linux_x11.list_windows()]
+    assert titles == ["", "notes - Mousepad"]
+
+
+@pytest.mark.asyncio
+async def test_x11_origins_fall_back_to_xlib_without_xwininfo(monkeypatch):
+    from conductor_desktop.core.backends import linux_x11
+
+    monkeypatch.setattr(linux_x11.shutil, "which", lambda _b: None)
+    monkeypatch.setattr(linux_x11, "_xlib_client_origins", lambda: {0x1600017: (10, 37)})
+    assert await linux_x11._absolute_origins() == {0x1600017: (10, 37)}
