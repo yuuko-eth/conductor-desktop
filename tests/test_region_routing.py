@@ -51,6 +51,12 @@ class _FakeState:
         self.region_grounder = region_grounder
         self.describe_grounder = describe_grounder
         self.config = _FakeConfig(grounder_family)
+        self.executor = _FakeExecutor()
+
+
+class _FakeExecutor:
+    async def get_desktop_origin(self) -> tuple[int, int]:
+        return (0, 0)
 
 
 def _png_b64(w: int = 100, h: int = 100) -> str:

@@ -88,6 +88,20 @@ def disambiguating_anchors(elements: list[ScreenElement]) -> list[str]:
     return anchors
 
 
+async def _whole_desktop_origin(device_id: str | None,
+                                 screen: int | str | None) -> tuple[int, int]:
+    """Offset from whole-desktop image space to absolute coords; (0, 0) for a
+    phone or a single monitor, whose results stay local to that target."""
+    if device_id is not None or screen is not None:
+        return (0, 0)
+    return await current().executor.get_desktop_origin()
+
+
+def _shift(bbox: tuple[int, int, int, int], ox: int, oy: int) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = bbox
+    return (x1 + ox, y1 + oy, x2 + ox, y2 + oy)
+
+
 async def ground_to_screen_elements(target: str, device_id: str | None = None,
                                      screen: int | str | None = None,
                                      grounder: Grounder | None = None,
@@ -121,11 +135,12 @@ async def ground_to_screen_elements(target: str, device_id: str | None = None,
         screen_w, screen_h = await mobile_executor(device_id).get_dimensions()
     else:
         screen_w, screen_h = await st.executor.get_screen_dimensions(screen=screen)
+    ox, oy = await _whole_desktop_origin(device_id, screen)
     out: list[ScreenElement] = []
     for el in elements:
         bbox, position = project_bbox(el.bbox, to=(screen_w, screen_h),
                                       frm=(img_w, img_h), space=CoordSpace.NORM1000)
-        out.append(ScreenElement(bbox=bbox, description=el.description,
+        out.append(ScreenElement(bbox=_shift(bbox, ox, oy), description=el.description,
                                  position=position, point=el.point))
     return out
 
@@ -216,13 +231,14 @@ async def capture_and_enumerate(
         screen_w, screen_h = await mobile_executor(device_id).get_dimensions()
     else:
         screen_w, screen_h = await st.executor.get_screen_dimensions(screen=screen)
+    ox, oy = await _whole_desktop_origin(device_id, screen)
     out: list[EnumeratedScreenElement] = []
     for el in elements:
         # OmniParser returns image-pixel xyxy.
         bbox, position = project_bbox(el.bbox, to=(screen_w, screen_h),
                                       frm=(img_w, img_h), space=CoordSpace.IMAGE_PIXELS)
         out.append(EnumeratedScreenElement(
-            bbox=bbox, kind=el.kind, interactive=el.interactive,
+            bbox=_shift(bbox, ox, oy), kind=el.kind, interactive=el.interactive,
             content=el.content, position=position,
         ))
     return out, annotated, scene

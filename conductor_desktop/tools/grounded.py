@@ -156,8 +156,10 @@ async def scroll(target: Annotated[str, Field(description=(
     ui_scroll_to is more direct; scroll_at takes coordinates."""
     warn: list[str] = []
     if target.strip().lower() == "screen":
-        w, h = await current().executor.get_screen_dimensions(screen=screen)
-        x, y = w // 2, h // 2
+        ex = current().executor
+        w, h = await ex.get_screen_dimensions(screen=screen)
+        ox, oy = (0, 0) if screen is not None else await ex.get_desktop_origin()
+        x, y = ox + w // 2, oy + h // 2
     else:
         resolved = await resolve_one(target, screen=screen)
         if isinstance(resolved, str):

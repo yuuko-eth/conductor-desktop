@@ -263,6 +263,10 @@ async def crop(
         raise ToolError(format_ambiguity(target, projected))
 
     px = projected[0]
+    if device_id is None and screen is None:
+        # Report absolute coords, as locate does, not whole-image pixels.
+        dx, dy = await current().executor.get_desktop_origin()
+        off_x, off_y = off_x + dx, off_y + dy
     left = max(0, px.bbox[0] - padding)
     top = max(0, px.bbox[1] - padding)
     right = min(img_w, px.bbox[2] + padding)
@@ -360,8 +364,13 @@ async def _scope_box(scope: str | None, device_id: str | None,
     if not clip:
         return None, None, None
     try:
-        screen_w, screen_h = await current().executor.get_screen_dimensions(screen=screen)
-        box = clip_rect_to_image(clip, screen_origin(scene, screen),
+        ex = current().executor
+        screen_w, screen_h = await ex.get_screen_dimensions(screen=screen)
+        # Window bounds are absolute; the image starts at the screen's origin,
+        # or the desktop's for a whole-desktop capture.
+        origin = (screen_origin(scene, screen) if screen is not None
+                  else await ex.get_desktop_origin())
+        box = clip_rect_to_image(clip, origin,
                                  img_w, img_h, screen_w, screen_h)
     except Exception:
         log.debug("scope clip failed; using the full frame", exc_info=True)

@@ -171,10 +171,13 @@ async def emit_png(png: bytes, label: str, width: int, height: int,
     shrunk inline copy carries a line saying how it maps to input pixels.
     """
     mode = current().config.screenshot_mode
+    origin = (0, 0)
+    if frame is not None and frame.device_id is None and frame.screen is None:
+        origin = await current().executor.get_desktop_origin()
     if mode == "file":
         # No ImageContent sent — skip the resize entirely.
         path = save_png(png, label)
-        _remember(frame, width, height, width, height)
+        _remember(frame, width, height, width, height, origin)
         return [TextContent(
             type="text",
             text=f"{label} → {path} ({width}x{height}); Read this path to view.",
@@ -184,7 +187,7 @@ async def emit_png(png: bytes, label: str, width: int, height: int,
     # full-desktop capture take a noticeable fraction of a second.
     inline_png, inline_w, inline_h = await asyncio.to_thread(
         shrink_png_for_payload, png, width, height, payload_max)
-    _remember(frame, inline_w, inline_h, width, height)
+    _remember(frame, inline_w, inline_h, width, height, origin)
     out: list[TextContent | ImageContent] = [png_to_image_content(inline_png)]
     if frame is not None and (inline_w, inline_h) != (width, height):
         out.append(TextContent(type="text", text=_scale_note(
@@ -212,12 +215,13 @@ class FrameTarget:
 
 
 def _remember(target: FrameTarget | None, w: int, h: int,
-              native_w: int, native_h: int) -> None:
+              native_w: int, native_h: int,
+              origin: tuple[int, int] = (0, 0)) -> None:
     if target is None:
         return
     current().frames[target.device_id] = Frame(
         width=w, height=h, native_width=native_w, native_height=native_h,
-        screen=target.screen)
+        screen=target.screen, origin=origin)
 
 
 def _scale_note(label: str, target: FrameTarget, w: int, h: int,

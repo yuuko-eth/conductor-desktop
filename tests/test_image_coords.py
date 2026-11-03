@@ -36,12 +36,33 @@ def test_the_cap_is_on_the_long_edge(size, cap, want):
     assert (w, h) == want
 
 
+class _Executor:
+    def __init__(self, origin: tuple[int, int] = (0, 0)) -> None:
+        self.clicks: list[tuple] = []
+        self.origin = origin
+
+    async def get_screen_dimensions(self, screen=None) -> tuple[int, int]:
+        return (3136, 1960)
+
+    async def get_desktop_origin(self) -> tuple[int, int]:
+        return self.origin
+
+    async def click(self, x, y, button="left", clicks=1, screen=None):
+        self.clicks.append((x, y, screen))
+        return ActionResult(success=True)
+
+    async def tap(self, x, y):
+        self.clicks.append((x, y, "tap"))
+        return ActionResult(success=True)
+
+
 @pytest.fixture
 def st(install_state, tmp_path):
     return install_state(
         config=SimpleNamespace(screenshot_mode="inline", payload_max_edge=1568,
                                screenshot_dir=str(tmp_path)),
         frames={},
+        executor=_Executor(),
     )
 
 
@@ -71,22 +92,6 @@ async def test_file_mode_frames_are_native(st):
     assert st.frames[None].scale == (1.0, 1.0)
 
 
-class _Executor:
-    def __init__(self) -> None:
-        self.clicks: list[tuple] = []
-
-    async def get_screen_dimensions(self, screen=None) -> tuple[int, int]:
-        return (3136, 1960)
-
-    async def click(self, x, y, button="left", clicks=1, screen=None):
-        self.clicks.append((x, y, screen))
-        return ActionResult(success=True)
-
-    async def tap(self, x, y):
-        self.clicks.append((x, y, "tap"))
-        return ActionResult(success=True)
-
-
 @pytest.fixture
 def executor(monkeypatch, st):
     async def no_observation(*_a, **_kw):
@@ -103,6 +108,22 @@ async def test_image_coords_scale_back_to_the_screen(executor):
     out = await coords.click_at(400, 300, image_coords=True)
     assert not out.isError
     assert executor.clicks == [(800, 600, None)]
+
+
+async def test_whole_desktop_image_coords_add_the_desktop_origin(executor):
+    # A monitor above and left of the primary (macOS, Windows): the
+    # whole-desktop image starts at (-281, -1080) in absolute coords.
+    executor.origin = (-281, -1080)
+    await emit_png(_png(3136, 1960), "screen", 3136, 1960, frame=FrameTarget())
+    await coords.click_at(400, 300, image_coords=True)
+    assert executor.clicks == [(800 - 281, 600 - 1080, None)]
+
+
+async def test_one_screen_image_coords_ignore_the_desktop_origin(executor):
+    executor.origin = (-281, -1080)
+    await emit_png(_png(3136, 1960), "screen-1", 3136, 1960, frame=FrameTarget(screen=1))
+    await coords.click_at(10, 10, image_coords=True)
+    assert executor.clicks == [(20, 20, 1)]
 
 
 async def test_image_coords_carry_the_screen_the_image_was_of(executor):

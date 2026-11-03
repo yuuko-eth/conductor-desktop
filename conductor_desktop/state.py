@@ -101,12 +101,16 @@ class Frame:
     desktop or a phone): coordinates in it are local to that monitor, the
     same convention the ``*_at`` tools use for ``screen=``. ``scale`` is
     native pixels per image pixel, 1.0 when the image wasn't shrunk.
+    ``origin`` is where the image's top-left sits in absolute coords: the
+    desktop origin for a whole-desktop capture (negative with a monitor left
+    of or above the primary), else (0, 0).
     """
     width: int
     height: int
     native_width: int
     native_height: int
     screen: int | str | None = None
+    origin: tuple[int, int] = (0, 0)
 
     @property
     def scale(self) -> tuple[float, float]:
@@ -114,7 +118,7 @@ class Frame:
 
     def to_native(self, x: int, y: int) -> tuple[int, int]:
         sx, sy = self.scale
-        return (round(x * sx), round(y * sy))
+        return (round(x * sx) + self.origin[0], round(y * sy) + self.origin[1])
 
 
 _current: State | None = None

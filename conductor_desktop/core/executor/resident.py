@@ -224,6 +224,13 @@ class ResidentExecutor(HostExecutor):
         shot = await _common.take_screenshot()
         return shot.width, shot.height
 
+    async def get_desktop_origin(self) -> tuple[int, int]:
+        _, _, screens = await self._resolve_screen(None)
+        if not screens:
+            return (0, 0)
+        return (min(int(s["bounds"][0]) for s in screens),
+                min(int(s["bounds"][1]) for s in screens))
+
     # ---- Pointer ----
 
     async def _input(self, work: Awaitable[Any], output: str = "") -> ActionResult:

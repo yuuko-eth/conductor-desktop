@@ -148,6 +148,18 @@ class HostExecutor(ABC):
         """
         ...
 
+    async def get_desktop_origin(self) -> tuple[int, int]:
+        """Absolute coords of pixel (0, 0) of a whole-desktop capture: the
+        top-left corner of the union of all monitors.
+
+        (0, 0) unless a monitor sits left of or above the primary (macOS and
+        Windows put the primary's top-left at the origin, so such a monitor
+        has negative coords). Image points from a whole-desktop capture
+        need this added to become the absolute coords input and window
+        bounds use.
+        """
+        return (0, 0)
+
     # ---- Pointer input ----
     # ``screen`` (if set) means (x,y) are screen-local; the executor adds
     # the screen's origin before injecting the absolute coords the input

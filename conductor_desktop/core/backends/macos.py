@@ -18,6 +18,19 @@ log = logging.getLogger("conductor_desktop.macos")
 # ── Screen enumeration ──────────────────────────────────────────────
 
 
+def _flip_pivot(ns_screens) -> int:
+    """The NSScreen y that is Quartz y=0: the top edge of the menu-bar
+    display, ``NSScreen.screens()[0]``, whose bottom-left is the Cocoa origin
+    and whose top-left is the Quartz one. Quartz y = pivot - (ns_y + h).
+
+    Not the top of the whole layout: with a display above the menu-bar one,
+    that put the layout's top at y=0 while windows (kCGWindowBounds) and
+    input stay in Quartz space, so screen-local coords landed off screen.
+    """
+    f = ns_screens[0].frame()
+    return int(f.origin.y + f.size.height)
+
+
 async def list_screens() -> list[dict]:
     """Enumerate NSScreens. See https://docs.conductor-mcp.io/concepts/scene-graph/ (Screen node).
 
@@ -40,10 +53,7 @@ async def list_screens() -> list[dict]:
         raise BackendError("macOS reports no screens (a headless session?)")
 
     # Convert NSScreen (bottom-left origin) → Quartz (top-left origin).
-    # The total virtual height is the max-y of any screen's top edge.
-    total_h = max(int(s.frame().origin.y + s.frame().size.height) for s in screens)
-    main = NSScreen.mainScreen()
-    primary_id = id(main) if main is not None else None
+    pivot = _flip_pivot(screens)
 
     out = []
     for i, s in enumerate(screens):
@@ -52,7 +62,7 @@ async def list_screens() -> list[dict]:
         w = int(f.size.width)
         h = int(f.size.height)
         # Flip y from NSScreen (bottom-left) to Quartz (top-left).
-        y = int(total_h - (f.origin.y + h))
+        y = int(pivot - (f.origin.y + h))
         try:
             name = str(s.localizedName())
         except Exception:
@@ -78,7 +88,9 @@ async def list_screens() -> list[dict]:
             "name": name or f"Display {i}",
             "bounds": [x, y, w, h],
             "scale": scale,
-            "primary": id(s) == primary_id,
+            # screens()[0] is the menu-bar display. mainScreen() is not: it is
+            # whichever screen holds the key window, so it moves with focus.
+            "primary": i == 0,
             # Carry-fields stripped before return — dock detector only.
             "_ns_frame": (int(f.origin.x), int(f.origin.y),
                           int(f.size.width), int(f.size.height)),
@@ -142,17 +154,15 @@ def _attach_dock_info(screens: list[dict]) -> None:
     if orientation not in _DOCK_ORIENTATIONS:
         orientation = "bottom"
 
-    # Virtual-space top-edge in NSScreen coords — used to flip the
-    # dock rect back into Quartz top-left for ``bounds``. Matches the
-    # same total_h pivot used in ``list_screens``.
+    # Flip the dock rect back into Quartz top-left for ``bounds``, with the
+    # same pivot as ``list_screens``.
     try:
         from AppKit import NSScreen
         ns_screens = NSScreen.screens()
-        total_h = max(int(s.frame().origin.y + s.frame().size.height)
-                      for s in ns_screens) if ns_screens else 0
+        pivot = _flip_pivot(ns_screens) if ns_screens else None
     except Exception:
         log.debug("reading screen frames for the dock failed", exc_info=True)
-        total_h = 0
+        pivot = None
 
     # macOS menu-bar height in points; default for Big Sur+. We only
     # need a coarse guess to avoid mis-attributing the menubar's
@@ -191,7 +201,7 @@ def _attach_dock_info(screens: list[dict]) -> None:
             sx_, sy_, sw_, sh_ = ns_strip
             # Flip NSScreen bottom-left → Quartz top-left for the wire
             # bounds (matches the screen.bounds origin convention).
-            qy = total_h - (sy_ + sh_) if total_h else sy_
+            qy = pivot - (sy_ + sh_) if pivot is not None else sy_
             bounds: list[int] | None = [sx_, qy, sw_, sh_]
         else:
             bounds = None
