@@ -10,6 +10,7 @@ import base64
 import io
 import logging
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -148,6 +149,84 @@ def _mss_grab(screen: int | None, display: str | None = None) -> Image.Image:
         return Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
 
 
+_SCREENCAPTURE = "/usr/sbin/screencapture"
+
+
+def _macos_display_rects() -> list[tuple[int, int, int, int]]:
+    """Every active display as (x, y, w, h) in Quartz global points (top-left
+    origin), the space ``screencapture -R`` and list_screens' bounds use.
+    Geometry only: this doesn't capture, so it never reaches replayd."""
+    import Quartz
+
+    err, ids, count = Quartz.CGGetActiveDisplayList(32, None, None)
+    if err:
+        raise BackendError(f"CGGetActiveDisplayList failed: {err}")
+    rects = []
+    for d in ids[:count]:
+        r = Quartz.CGDisplayBounds(d)
+        rects.append((int(r.origin.x), int(r.origin.y), int(r.size.width), int(r.size.height)))
+    return rects
+
+
+async def _screencapture_rect(rect: tuple[int, int, int, int], tmpdir: str, n: int) -> Image.Image:
+    """One ``screencapture -R`` grab, scaled from backing pixels to points so it
+    matches what mss returned (grounder and click coordinates are points)."""
+    x, y, w, h = rect
+    path = os.path.join(tmpdir, f"shot{n}.bmp")
+    proc = await asyncio.create_subprocess_exec(
+        _SCREENCAPTURE, "-x", "-t", "bmp", "-R", f"{x},{y},{w},{h}", path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise BackendError("screencapture timed out") from None
+    if proc.returncode != 0 or not os.path.exists(path) or not os.path.getsize(path):
+        raise BackendError(f"screencapture returned {proc.returncode}: "
+                           f"{stderr.decode(errors='replace')[:200]}")
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+    if im.size != (w, h):
+        fx, fy = im.width / w, im.height / h
+        if fx == fy and fx.is_integer():
+            im = im.reduce(int(fx))  # Retina: an exact 2x box filter, fast
+        else:
+            im = im.resize((w, h), Image.Resampling.BILINEAR)
+    return im
+
+
+async def _macos_screencapture(target: dict | None) -> Image.Image:
+    """Capture through /usr/sbin/screencapture rather than in-process.
+
+    On recent macOS (seen on 26.5, not on 14.8) CGWindowListCreateImage, which
+    mss calls, is proxied through replayd, and replayd tells clients apart by
+    executable path. A second live process from the same path (two MCP clients
+    running servers from one venv) gets its connection dropped in a loop until
+    SkyLight's 30 s proxy timeout, so every capture took 30 s. Short-lived
+    capturers from one path collide too whenever they overlap. screencapture
+    is unaffected, alone, concurrently, and next to an in-process holder.
+    """
+    rects = ([tuple(int(v) for v in target["bounds"])] if target and target.get("bounds")
+             else _macos_display_rects())
+    with tempfile.TemporaryDirectory(prefix="conductor-shot-") as tmpdir:
+        shots = await asyncio.gather(*(_screencapture_rect(r, tmpdir, i)
+                                       for i, r in enumerate(rects)))
+    if len(shots) == 1:
+        return shots[0]
+    # Stitch the virtual desktop like mss's monitors[0]: union of all displays,
+    # origin at the top-left-most corner.
+    min_x = min(r[0] for r in rects)
+    min_y = min(r[1] for r in rects)
+    width = max(r[0] + r[2] for r in rects) - min_x
+    height = max(r[1] + r[3] for r in rects) - min_y
+    canvas = Image.new("RGB", (width, height))
+    for (x, y, _, _), im in zip(rects, shots):
+        canvas.paste(im, (x - min_x, y - min_y))
+    return canvas
+
+
 async def _capture_to_file(argv: list[str], ok, target: dict | None) -> Screenshot | None:
     """Run a capture tool that writes a PNG to the path standing in for
     ``{path}`` in ``argv``; None when it fails. The temporary directory goes
@@ -187,7 +266,7 @@ async def take_screenshot(screen: int | None = None,
     - spectacle / GNOME D-Bus / gnome-screenshot / scrot: capture full
       virtual desktop, then PIL-crop to ``screens[screen].bounds``.
 
-    Fallback chain: mss → mss on XWayland → grim → spectacle (KDE) →
+    Fallback chain: screencapture (macOS) → mss → mss on XWayland → grim → spectacle (KDE) →
     GNOME D-Bus → gnome-screenshot → scrot (X11 fallback for platforms mss
     rejects, notably FreeBSD, where it raises ScreenShotError on import).
     """
@@ -198,6 +277,17 @@ async def take_screenshot(screen: int | None = None,
             raise BackendError(f"screen index {screen} out of range "
                                f"(0..{len(screens) - 1 if screens else -1})")
         target = screens[screen]
+
+    # 0. macOS: screencapture, never an in-process grab (see
+    #    _macos_screencapture for the replayd stall). mss stays as the fallback.
+    if sys.platform == "darwin" and os.path.exists(_SCREENCAPTURE):
+        try:
+            pil_img = await _macos_screencapture(target)
+        except Exception as e:
+            log.warning("screenshot: screencapture failed, falling back to mss: %s", e,
+                        exc_info=True)
+        else:
+            return _encode(pil_img)
 
     # 1. mss (X11, macOS, Windows). 2. mss on XWayland's :0 — GNOME Wayland
     # usually runs one — passed to mss rather than set in os.environ, which
