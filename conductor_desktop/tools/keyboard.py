@@ -18,13 +18,13 @@ async def type_text(text: Annotated[str, Field(description="The text to type.")]
                         "emulators, VMs, remote desktops and games, which don't "
                         "take a paste."))] = False,
                     ) -> list[Content]:
-    """Type text into whatever has keyboard focus right now, so focus the field
-    first (ui_focus, click, or focus_window for the app). Text of 8 or more
-    characters, characters the input method can't type, or any text while a
-    Linux input method such as Chewing or Pinyin is composing, is pasted
-    through the clipboard and stays there, replacing what the user had
-    copied, unless keystrokes=true. To replace a native field's whole value,
-    ui_set_value is more reliable."""
+    """Type text into whatever has keyboard focus, so focus the field first
+    (ui_focus, click, or focus_window for the app). Send several lines in one
+    call, newlines included. Text of 8 or more characters, characters the
+    input method can't type, or any text while a Linux input method such as
+    Chewing or Pinyin is composing, is pasted through the clipboard and stays
+    there, replacing what the user had copied, unless keystrokes=true. To
+    replace a native field's whole value, ui_set_value is more reliable."""
     result = await current().executor.type_text(text, literal=keystrokes)
     return await action_reply(f"type({len(text)} chars)", result, observe=False)
 

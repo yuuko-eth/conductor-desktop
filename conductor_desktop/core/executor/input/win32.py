@@ -12,6 +12,10 @@ from .base import LocalInputBackend, _utf16_units
 log = logging.getLogger(__name__)
 
 
+# Characters typed as their key rather than as a Unicode character.
+_AS_KEY = {"\n": "enter", "\t": "tab"}
+
+
 class Win32Input(LocalInputBackend):
     """Mouse/keyboard via ctypes SendInput (Windows).
 
@@ -271,7 +275,15 @@ class Win32Input(LocalInputBackend):
         # out separately with a short dwell, as for clicks: sent in one batch,
         # the last character was sometimes lost (about one run in two on
         # Windows 11 Notepad).
-        for ch in text:
+        #
+        # A newline or tab goes as the key a keyboard sends for it: as a
+        # character (U+000A), Notepad and Chromium dropped every newline and
+        # ran the lines together. \r\n is one Enter.
+        for ch in text.replace("\r\n", "\n").replace("\r", "\n"):
+            if ch in _AS_KEY:
+                await self.key_press(_AS_KEY[ch])
+                await asyncio.sleep(0.02)
+                continue
             for unit in _utf16_units(ch):
                 self._send_inputs(self._key_input(0, unit, self._KEYEVENTF_UNICODE))
                 await asyncio.sleep(0.01)
