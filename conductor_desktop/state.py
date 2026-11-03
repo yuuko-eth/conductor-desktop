@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -66,9 +67,16 @@ class State:
     tray_state: TrayStateMachine | None = None
     # Operator pause toggle (tray menu). When set, ACTING-classified
     # tools refuse with a clear message; OBSERVING tools pass through.
-    # threading.Event so the tray thread can flip it without holding any
-    # asyncio lock.
-    input_paused: threading.Event = field(default_factory=threading.Event)
+    # The server installs a desktop_lock.PauseFlag (a file beside the lock,
+    # shared by every server on it); anything with is_set/set/clear works,
+    # and tests keep a threading.Event.
+    input_paused: Any = field(default_factory=threading.Event)
+    # Idle release of the input lock (server.py): time.monotonic() of the
+    # last tool call start or end, how many calls are running, and when
+    # this server last let go of the lock for being idle.
+    last_activity: float = field(default_factory=time.monotonic)
+    calls_in_flight: int = 0
+    idle_released_at: float | None = None
     # Per-session perception observers (AT-SPI / AX / WinEvent — added in
     # subsequent slices). drain_deltas() iterates this list to gather
     # platform-wide events. Per-call observers (e.g. CDP, scoped to one

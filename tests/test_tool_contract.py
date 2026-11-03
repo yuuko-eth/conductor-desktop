@@ -49,7 +49,7 @@ def state(monkeypatch, install_state):
             audit=_Audit(),
             tray_state=TrayStateMachine(),
             input_paused=threading.Event(),
-            lock=SimpleNamespace(is_held=lambda: True),
+            lock=SimpleNamespace(is_held=lambda: True, touch=lambda: None),
         )
         install_state(st)
         return st

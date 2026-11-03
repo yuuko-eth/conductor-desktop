@@ -12,8 +12,13 @@ from conductor_desktop.audit import AuditLog
 
 
 class _HeldLock:
+    idle_release = 0.0
+
     def is_held(self) -> bool:
         return True
+
+    def touch(self) -> None:
+        pass
 
 
 @pytest.fixture
@@ -34,6 +39,9 @@ def install_state(monkeypatch):
             "audit": AuditLog(enabled=False),
             "input_paused": threading.Event(),
             "lock": _HeldLock(),
+            "last_activity": 0.0,
+            "calls_in_flight": 0,
+            "idle_released_at": None,
         }
         for key, value in defaults.items():
             if not hasattr(st, key):
@@ -105,3 +113,28 @@ def no_mac_layout(monkeypatch):
     from conductor_desktop.core.executor.input import mac_layout
 
     monkeypatch.setattr(mac_layout, "current", lambda: None)
+
+
+class FakeTrayLock:
+    """A held desktop lock for the tray tests: listeners, release."""
+
+    def __init__(self, held: bool = True) -> None:
+        self.held = held
+        self.listeners: list = []
+
+    def is_held(self) -> bool:
+        return self.held
+
+    def add_listener(self, fn) -> None:
+        self.listeners.append(fn)
+
+    def release(self) -> None:
+        self.held = False
+        for fn in self.listeners:
+            fn(False)
+
+    def try_acquire(self) -> bool:
+        self.held = True
+        for fn in self.listeners:
+            fn(True)
+        return True

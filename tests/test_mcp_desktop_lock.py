@@ -136,8 +136,9 @@ async def test_decorator_blocks_when_no_lock(fake_state) -> None:
         assert called == [], "wrapped fn must not run when lock is contended"
         assert result.isError and len(result.content) == 1
         text = result.content[0].text
-        assert "desktop input lock held by" in text
-        assert "pid=" in text  # surfaces holder identity
+        assert "desktop input lock is held by" in text
+        assert f"pid {os.getpid()}" in text  # surfaces holder identity
+        assert "release_input" in text  # and how to free it
     finally:
         foreign_holder.release()
 

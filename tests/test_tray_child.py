@@ -11,6 +11,7 @@ import sys
 import textwrap
 
 import pytest
+from conftest import FakeTrayLock
 
 from conductor_desktop import server, tray, tray_child
 
@@ -76,7 +77,7 @@ def test_quit_in_the_tray_shuts_the_server_down(fake_tray, monkeypatch):
         await shutdown_event.wait()  # set when the tray's Quit arrives
 
     monkeypatch.setattr(server, "_serve_async", serve)
-    tray._run_holder_with_tray_child(Config(), lock=None)
+    tray._run_holder_with_tray_child(Config(), lock=FakeTrayLock())
 
     lines = [json.loads(line) for line in seen.read_text().splitlines()]
     assert lines[0]["status_text"].startswith("conductor-desktop · pid=")
@@ -92,7 +93,7 @@ def test_a_server_that_dies_at_startup_takes_the_tray_with_it(fake_tray, monkeyp
 
     monkeypatch.setattr(server, "_serve_async", refuse)
     with pytest.raises(RuntimeError, match="refuses to start"):
-        tray._run_holder_with_tray_child(Config(), lock=None)
+        tray._run_holder_with_tray_child(Config(), lock=FakeTrayLock())
     assert children[0].poll() is not None
 
 
@@ -102,6 +103,6 @@ def test_the_server_env_keeps_accessibility_for_apps_it_launches(fake_tray, monk
     monkeypatch.delenv("NO_AT_BRIDGE", raising=False)
     monkeypatch.setattr(tray, "_TRAY_IN_CHILD", True)
     monkeypatch.setattr(tray, "_run_holder_with_tray_child", lambda config, lock: None)
-    tray.run_holder(Config(), lock=None)
+    tray.run_holder(Config(), lock=FakeTrayLock())
     import os
     assert "NO_AT_BRIDGE" not in os.environ

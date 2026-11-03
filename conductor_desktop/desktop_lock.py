@@ -11,9 +11,18 @@ logs) held with an OS-level advisory lock (``fcntl.flock`` on POSIX,
 Advisory locks are released by the kernel when the holding process exits,
 so a crashed holder can't strand the desktop.
 
-Holder metadata (PID, start time, transport) is written to a sibling
-``.json`` file via atomic rename, so spectators can produce a useful
-error message without touching the locked file.
+Holder metadata (PID, start time, transport, last activity, idle policy) is
+written to a sibling ``.json`` file via atomic rename, so spectators can
+produce a useful error message without touching the locked file.
+
+The lock is held for as long as the holder wants it: the OS frees it only
+when the holder lets go or exits, so nobody can take it from a live holder.
+An idle holder lets go by itself (server.py's idle release, configured by
+``CONDUCTOR_DESKTOP_LOCK_IDLE_RELEASE``), and whoever acts next takes it.
+
+The pause switch (tray "Pause input") is a file beside the lock file, not
+process state, so it stops every server sharing the lock, including one
+that takes the lock after the pause was set.
 """
 
 from __future__ import annotations
@@ -24,6 +33,8 @@ import os
 import sys
 import tempfile
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +45,15 @@ log = logging.getLogger("conductor.mcp.lock")
 
 
 DEFAULT_LOCK_NAME = "desktop.lock"
+PAUSE_FILE_NAME = "input-paused"
+
+# How often the holder rewrites its last-activity time; spectators only need
+# it to the nearest few seconds.
+_TOUCH_INTERVAL = 10.0
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 @dataclass
@@ -41,9 +61,14 @@ class HolderInfo:
     pid: int
     started_at: str
     transport: str
+    # Last tool call the holder served (ISO time), "" if never recorded.
+    last_active: str = ""
+    # Seconds of inactivity after which the holder lets go; 0 = never.
+    idle_release: float = 0.0
 
     def to_dict(self) -> dict:
-        return {"pid": self.pid, "started_at": self.started_at, "transport": self.transport}
+        return {"pid": self.pid, "started_at": self.started_at, "transport": self.transport,
+                "last_active": self.last_active, "idle_release": self.idle_release}
 
     @classmethod
     def from_dict(cls, d: dict) -> HolderInfo:
@@ -51,7 +76,40 @@ class HolderInfo:
             pid=int(d.get("pid", 0)),
             started_at=str(d.get("started_at", "")),
             transport=str(d.get("transport", "")),
+            last_active=str(d.get("last_active", "") or ""),
+            idle_release=float(d.get("idle_release", 0) or 0),
         )
+
+    def idle_seconds(self) -> float | None:
+        """Seconds since the holder's last recorded activity, if known."""
+        try:
+            then = datetime.fromisoformat(self.last_active or self.started_at)
+        except ValueError:
+            return None
+        return max(0.0, (datetime.now(UTC) - then).total_seconds())
+
+
+class PauseFlag:
+    """The tray's "Pause input" switch, shared by every server on one lock.
+
+    Same interface as the ``threading.Event`` it replaces (``is_set``, ``set``,
+    ``clear``). A file, so a server that takes the lock later is paused too,
+    and the pause survives the holder quitting: input stays stopped until
+    someone resumes it from a tray, or deletes the file.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+
+    def is_set(self) -> bool:
+        return self.path.exists()
+
+    def set(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(_now_iso() + "\n")
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
 
 
 class DesktopLock:
@@ -61,15 +119,48 @@ class DesktopLock:
     coroutines should serialize with an :class:`asyncio.Lock`.
     """
 
-    def __init__(self, path: Path | str | None = None, *, transport: str = "stdio") -> None:
+    def __init__(self, path: Path | str | None = None, *, transport: str = "stdio",
+                 idle_release: float = 0.0) -> None:
         if path is None:
             path = state_dir() / DEFAULT_LOCK_NAME
         self.path = Path(path)
         self.meta_path = self.path.with_suffix(self.path.suffix + ".json")
+        self.pause_path = self.path.with_name(PAUSE_FILE_NAME)
+        self.idle_release = idle_release
         self._transport = transport
         self._fd: int | None = None
+        self._started_at = ""
+        self._last_touch = 0.0
         # Re-entrant guard: try_acquire while already held is a no-op success.
         self._mu = threading.Lock()
+        self._listeners: list[Callable[[bool], None]] = []
+
+    def add_listener(self, fn: Callable[[bool], None]) -> None:
+        """Call ``fn(held)`` whenever this process takes or lets go of the lock.
+
+        Called on whichever thread acquired or released, outside the lock's
+        own mutex; a listener that touches UI marshals to its UI thread.
+        """
+        self._listeners.append(fn)
+
+    def _notify(self, held: bool) -> None:
+        for fn in list(self._listeners):
+            try:
+                fn(held)
+            except Exception:
+                log.warning("desktop lock listener failed", exc_info=True)
+
+    def touch(self) -> None:
+        """Record activity in the metadata, at most every few seconds."""
+        now = time.monotonic()
+        with self._mu:
+            if self._fd is None or now - self._last_touch < _TOUCH_INTERVAL:
+                return
+            self._last_touch = now
+            try:
+                self._write_meta(last_active=_now_iso())
+            except OSError as e:
+                log.debug("desktop lock: meta touch failed: %s", e)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -97,8 +188,11 @@ class DesktopLock:
                 log.warning("desktop lock: unexpected OSError on flock: %s", e)
                 return False
             self._fd = fd
-            self._write_meta()
-            return True
+            self._started_at = _now_iso()
+            self._last_touch = time.monotonic()
+            self._write_meta(last_active=self._started_at)
+        self._notify(True)
+        return True
 
     def release(self) -> None:
         """Remove the holder metadata file, then drop the lock.
@@ -123,6 +217,7 @@ class DesktopLock:
             except OSError:
                 pass
             self._fd = None
+        self._notify(False)
 
     def read_holder_info(self) -> HolderInfo | None:
         """Read the holder metadata file, if it exists and parses.
@@ -145,11 +240,13 @@ class DesktopLock:
 
     # ── internals ─────────────────────────────────────────────────────
 
-    def _write_meta(self) -> None:
+    def _write_meta(self, last_active: str = "") -> None:
         info = HolderInfo(
             pid=os.getpid(),
-            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            started_at=self._started_at or _now_iso(),
             transport=self._transport,
+            last_active=last_active,
+            idle_release=self.idle_release,
         )
         # Atomic write via tempfile + os.replace, so spectators never read a
         # half-written file.

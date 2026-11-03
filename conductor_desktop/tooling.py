@@ -175,12 +175,46 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{m}m{seconds - m * 60:.1f}s"
 
 
+def _fmt_span(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds < 90:
+        return f"{seconds} s"
+    return f"{seconds // 60} min {seconds % 60:02d} s" if seconds < 3600 else f"{seconds // 3600} h"
+
+
+def _lock_refusal(st: _state.State) -> str:
+    """Why this server can't act: who holds the desktop and when it frees up."""
+    info = st.lock.read_holder_info()
+    if info is None:
+        who, when = "another conductor-desktop", ""
+    else:
+        who = f"pid {info.pid} ({info.transport}, holding since {info.started_at})"
+        idle = info.idle_seconds()
+        if info.idle_release > 0 and idle is not None:
+            left = info.idle_release - idle
+            when = (f" It was last active {_fmt_span(idle)} ago and lets go after "
+                    f"{_fmt_span(info.idle_release)} idle, so retrying in about "
+                    f"{_fmt_span(max(left, 0) + 15)} should work.")
+        elif idle is not None:
+            when = (f" It was last active {_fmt_span(idle)} ago and holds the "
+                    "desktop until it exits.")
+        else:
+            when = ""
+    lost = ""
+    if st.idle_released_at is not None:
+        lost = (f"This server let go of the desktop after "
+                f"{_fmt_span(st.lock.idle_release)} idle, and another one took it. ")
+    return (f"{lost}The desktop input lock is held by {who}.{when} To free it now, "
+            "pick Release input lock or Quit in that server's tray icon, or have "
+            f"that agent call release_input. {READ_ONLY_NOTE} still work from here.")
+
+
 async def _ensure_input_lock(st: _state.State) -> None:
     """Raise ToolError unless this process holds the desktop input lock.
 
-    A spectator first tries to take the lock over, in case the holder quit
-    since startup; the error names the holder so the user knows which
-    instance to quit.
+    A spectator first tries to take the lock, in case the holder quit or
+    let go for being idle; the error names the holder and says when it will
+    let go.
     """
     if st.lock.is_held():
         return
@@ -190,17 +224,15 @@ async def _ensure_input_lock(st: _state.State) -> None:
         if st.lock.is_held():
             return
         if st.lock.try_acquire():
-            log.info("desktop input lock acquired opportunistically — "
-                     "this MCP server is now the holder.")
+            log.info("desktop input lock acquired: this server is now the holder.")
+            st.idle_released_at = None
             return
-        info = st.lock.read_holder_info()
-        detail = (f"pid={info.pid}, started={info.started_at}, transport={info.transport}"
-                  if info is not None else "another conductor-desktop")
-        raise ToolError(
-            f"desktop input lock held by {detail}. Quit that instance from its "
-            f"tray icon (or kill the PID) to free the desktop. {READ_ONLY_NOTE} "
-            f"still work from this instance."
-        )
+        raise ToolError(_lock_refusal(st))
+
+
+def _note_activity(st: _state.State) -> None:
+    st.last_activity = time.monotonic()
+    st.lock.touch()
 
 
 def _wrap(fn: Callable[..., Awaitable[Any]], name: str, kind: Kind, needs_lock: bool):
@@ -209,16 +241,27 @@ def _wrap(fn: Callable[..., Awaitable[Any]], name: str, kind: Kind, needs_lock: 
     @functools.wraps(fn)
     async def call(*args: Any, **kwargs: Any) -> CallToolResult:
         st = _state.current()
-        if kind == "acting" and st.input_paused.is_set():
-            # Audited: "the agent tried to act while paused" is exactly what
-            # an operator reviews later.
-            st.audit.record(tool=name, klass=kind, ok=False, elapsed=0.0,
-                            kwargs=kwargs, error="input_paused")
-            return CallToolResult(isError=True, content=[TextContent(
-                type="text",
-                text=(f"error: input is paused via the conductor-desktop tray icon. "
-                      f"Toggle 'Pause input' off to allow {name}.")),
-            ])
+        if kind == "acting":
+            # The lock first: with nobody holding it there is no tray icon,
+            # and taking it brings back the icon a paused desktop resumes from.
+            if needs_lock:
+                try:
+                    await _ensure_input_lock(st)
+                except ToolError as e:
+                    st.audit.record(tool=name, klass=kind, ok=False, elapsed=0.0,
+                                    kwargs=kwargs, error="input_lock_held")
+                    return CallToolResult(isError=True, content=[
+                        TextContent(type="text", text=f"error: {e}")])
+            if st.input_paused.is_set():
+                # Audited: "the agent tried to act while paused" is exactly what
+                # an operator reviews later.
+                st.audit.record(tool=name, klass=kind, ok=False, elapsed=0.0,
+                                kwargs=kwargs, error="input_paused")
+                return CallToolResult(isError=True, content=[TextContent(
+                    type="text",
+                    text=(f"error: input is paused from the conductor-desktop tray icon. "
+                          f"Untick 'Pause input' there to allow {name}.")),
+                ])
         t0 = time.perf_counter()
         tray = st.tray_state
         call_id = (tray.start(name, args=args, kwargs=kwargs, klass=kind)
@@ -227,8 +270,12 @@ def _wrap(fn: Callable[..., Awaitable[Any]], name: str, kind: Kind, needs_lock: 
         # Each MCP request runs in its own task, so no reset is needed.
         CURRENT_TOOL.set(name)
         error: str | None = None
+        # Activity for the lock's idle release: a call in flight, however
+        # long (a wait_for, a slow grounder), is never idle.
+        _note_activity(st)
+        st.calls_in_flight += 1
         try:
-            if needs_lock:
+            if needs_lock and kind != "acting":
                 await _ensure_input_lock(st)
             content = _content(await fn(*args, **kwargs))
         except (ToolError, BackendError, GrounderError) as e:
@@ -252,6 +299,9 @@ def _wrap(fn: Callable[..., Awaitable[Any]], name: str, kind: Kind, needs_lock: 
                             elapsed=time.perf_counter() - t0, kwargs=kwargs,
                             error="cancelled" if cancelled else type(e).__name__)
             raise
+        finally:
+            st.calls_in_flight -= 1
+            _note_activity(st)
         elapsed = time.perf_counter() - t0
         if call_id is not None:
             # The dashboard shows this error; hide what the call's summary hides.

@@ -208,6 +208,10 @@ class TrayStateMachine:
                     return STATE_ACTING
             return STATE_OBSERVING
 
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
     def set_paused(self, paused: bool) -> None:
         """Flip the operator-pause flag.
 

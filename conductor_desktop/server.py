@@ -21,7 +21,7 @@ from .audit import from_config as _audit_from_config
 from .config import MCPConfig
 from .core.executor import create_executor
 from .core.models.host_node import HostNode
-from .desktop_lock import DesktopLock
+from .desktop_lock import DesktopLock, PauseFlag
 from .enumerate import Enumerator
 from .grounder import (
     Grounder,
@@ -66,6 +66,7 @@ async def _build_state(config: MCPConfig, lock: DesktopLock) -> State:
         enumerator=enumerator,
         lock=lock, lock_upgrade_mu=asyncio.Lock(),
         mobile=mobile_registry, audit=audit,
+        input_paused=PauseFlag(lock.pause_path),
     )
     await _start_desktop_observers(state)
     return state
@@ -542,6 +543,8 @@ async def _serve_async(config: MCPConfig, lock: DesktopLock,
         except Exception:
             log.exception("dashboard mount failed; continuing without dashboard")
 
+    idle_task = (asyncio.create_task(_idle_release_loop(st), name="lock-idle-release")
+                 if lock.idle_release > 0 else None)
     try:
         if config.transport == "stdio":
             transport_coro = mcp.run_stdio_async()
@@ -573,6 +576,8 @@ async def _serve_async(config: MCPConfig, lock: DesktopLock,
             if exc is not None and not isinstance(exc, asyncio.CancelledError):
                 raise exc
     finally:
+        if idle_task is not None:
+            idle_task.cancel()
         if dashboard_sidecar_task is not None and not dashboard_sidecar_task.done():
             dashboard_sidecar_task.cancel()
             try:
@@ -584,6 +589,40 @@ async def _serve_async(config: MCPConfig, lock: DesktopLock,
         if (st := _state.get()) is not None:
             _state.install(None)
             await _shutdown(st)
+
+
+def release_if_idle(st: _state.State, now: float | None = None) -> bool:
+    """Let go of the input lock if this server has been idle long enough.
+
+    Idle means no tool call started or ended for ``lock.idle_release``
+    seconds and none is running. Never while input is paused: the holder's
+    tray icon is where the operator resumes, and it goes when the lock does.
+    Returns True when it let go.
+    """
+    limit = st.lock.idle_release
+    if limit <= 0 or not st.lock.is_held():
+        return False
+    if st.calls_in_flight or st.input_paused.is_set():
+        return False
+    now = time.monotonic() if now is None else now
+    idle = now - st.last_activity
+    if idle < limit:
+        return False
+    st.lock.release()
+    st.idle_released_at = now
+    log.info("desktop input lock released after %.0f s idle; this server takes it "
+             "back on its next input call if it is still free", idle)
+    return True
+
+
+async def _idle_release_loop(st: _state.State) -> None:
+    period = min(15.0, max(1.0, st.lock.idle_release / 4))
+    while True:
+        await asyncio.sleep(period)
+        try:
+            release_if_idle(st)
+        except Exception:
+            log.warning("idle release check failed", exc_info=True)
 
 
 def _guarded(app, config: MCPConfig):
@@ -712,15 +751,16 @@ def run() -> None:
     # Acquire the global desktop input lock as early as possible. First-come-
     # first-serve: only the holder may inject input. Spectators still serve
     # read-only tools and surface a clear error from input-mutating ones.
-    lock = DesktopLock(config.lock_path or None, transport=config.transport)
+    lock = DesktopLock(config.lock_path or None, transport=config.transport,
+                       idle_release=config.lock_idle_release)
     is_holder = lock.try_acquire()
 
-    if is_holder:
-        # Holder owns the system tray icon (Quit releases the lock + exits).
-        # tray.run_holder runs the asyncio loop on a worker thread so pystray
-        # can own the main thread (required by macOS NSApplication).
-        from .tray import run_holder
-        run_holder(config, lock)
-    else:
-        # Spectator: run the MCP loop on the main thread; no tray.
-        asyncio.run(_serve_async(config, lock))
+    # Every server runs with the tray layout, because the lock can move: an
+    # idle holder lets go and whoever acts next takes it. The icon shows
+    # only while this process holds the lock (tray.py). tray.run_holder runs
+    # the asyncio loop on a worker thread so pystray can own the main thread
+    # (required by macOS NSApplication).
+    log.info("desktop input lock: %s at startup (pid %d)",
+             "holder" if is_holder else "spectator", os.getpid())
+    from .tray import run_holder
+    run_holder(config, lock)

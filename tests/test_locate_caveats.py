@@ -144,6 +144,9 @@ class _HeldLock:
     def is_held(self):
         return True
 
+    def touch(self):
+        pass
+
 
 async def test_click_emits_the_caveat_it_gathered_before_acting(monkeypatch, install_state):
     """A click on an absent target still lands somewhere and still reports

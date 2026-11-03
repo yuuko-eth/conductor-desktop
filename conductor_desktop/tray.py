@@ -1,6 +1,9 @@
-"""System tray icon for the holder ``conductor-desktop`` process.
+"""System tray icon for the ``conductor-desktop`` process holding the input lock.
 
-Only the desktop-lock holder shows a tray icon — spectators run silent.
+Every server runs this layout, and the icon follows the lock: it shows while
+this process holds the desktop input lock and goes when it lets go (idle
+release, "Release input lock", quit), so there is one icon per desktop, on
+the server that can act. A server that takes the lock later shows its own.
 
 Threading: pystray's macOS backend (and arguably others) wants the main
 thread for its event loop. The MCP asyncio loop therefore runs on a
@@ -89,30 +92,97 @@ class _TrayLink:
             self._child.stdin.close()
 
 
-def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
-    """The server on this thread, the tray in ``conductor_desktop.tray_child``."""
-    import subprocess
+class _ChildTray:
+    """The tray process on Linux/FreeBSD, running only while this server holds
+    the input lock. Called on the event loop's thread."""
 
+    def __init__(self, config: MCPConfig, on_action) -> None:
+        self._config = config
+        self._on_action = on_action
+        self._child = None
+        self._link: _TrayLink | None = None
+        self.generation = 0  # bumps per child, so the menu is resent to a new one
+
+    @property
+    def running(self) -> bool:
+        return self._child is not None
+
+    def send(self, msg: dict) -> None:
+        if self._link is not None:
+            self._link.send(msg)
+
+    def start(self) -> None:
+        import subprocess
+
+        if self._child is not None:
+            return
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-m", "conductor_desktop.tray_child"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+                env={**os.environ, "NO_AT_BRIDGE": "1"})
+        except OSError as e:
+            log.warning("tray unavailable (%s) — holding the lock without a tray icon", e)
+            return
+        self._child, self._link = child, _TrayLink(child)
+        self.generation += 1
+        log.info("tray icon shown (tray process %d)", child.pid)
+        self.send({"title": "Conductor Desktop (holder)",
+                   "status_text": _status_text(self._config),
+                   "dashboard": _dashboard_url(self._config) if self._config.dashboard else None})
+        on_action = self._on_action
+
+        def read() -> None:
+            for line in child.stdout:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "unavailable" in msg:
+                    log.info("No system tray available (%s) — running without tray icon",
+                             msg["unavailable"])
+                if "action" in msg:
+                    on_action(msg["action"])
+
+        threading.Thread(target=read, name="tray-link-reader", daemon=True).start()
+
+    def stop(self, wait: bool = False) -> None:
+        """End the tray process. ``wait`` blocks until it's gone (at shutdown,
+        so it can't outlive the server); otherwise it's reaped in the
+        background, off the event loop."""
+        import subprocess
+
+        child, link = self._child, self._link
+        if child is None:
+            return
+        self._child = self._link = None
+        link.close()  # stdin closing tells the tray to go
+        log.info("tray icon hidden (tray process %d ending)", child.pid)
+
+        def reap() -> None:
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+
+        if wait:
+            reap()
+        else:
+            threading.Thread(target=reap, name="tray-reap", daemon=True).start()
+
+
+def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
+    """The server on this thread; the tray in ``conductor_desktop.tray_child``
+    while this process holds the input lock."""
     from .server import _serve_async
 
-    try:
-        child = subprocess.Popen(
-            [sys.executable, "-m", "conductor_desktop.tray_child"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-            env={**os.environ, "NO_AT_BRIDGE": "1"})
-    except OSError as e:
-        log.warning("tray unavailable (%s) — running holder without tray icon", e)
-        asyncio.run(_serve_async(config, lock))
-        return
-    link = _TrayLink(child)
     state_machine = TrayStateMachine()
 
     async def serve() -> None:
         loop = asyncio.get_running_loop()
         shutdown = asyncio.Event()
-        link.send({"title": "Conductor Desktop (holder)", "status_text": _status_text(config),
-                   "dashboard": _dashboard_url(config) if config.dashboard else None})
-        state_machine.set_observer(lambda state: link.send({"state": state}))
+        tray = _ChildTray(config, lambda action: loop.call_soon_threadsafe(act, action))
+        state_machine.set_observer(lambda state: tray.send({"state": state}))
 
         def toggle_pause() -> None:
             st = _state.get()
@@ -143,6 +213,9 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
             if action == "quit":
                 log.info("tray: quit requested — releasing desktop lock and shutting down")
                 shutdown.set()
+            elif action == "release":
+                log.info("tray: releasing the desktop input lock; the next server to act takes it")
+                lock.release()
             elif action == "pause":
                 toggle_pause()
             elif action == "perm_test":
@@ -150,19 +223,12 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
 
-        def read() -> None:
-            for line in child.stdout:
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
-                if "unavailable" in msg:
-                    log.info("No system tray available (%s) — running without tray icon",
-                             msg["unavailable"])
-                if "action" in msg:
-                    loop.call_soon_threadsafe(act, msg["action"])
+        def on_lock_change(held: bool) -> None:
+            loop.call_soon_threadsafe(tray.start if held else tray.stop)
 
-        threading.Thread(target=read, name="tray-link-reader", daemon=True).start()
+        lock.add_listener(on_lock_change)
+        if lock.is_held():
+            tray.start()
 
         async def tick() -> None:
             # The latch's expiry, and the submenus when something changed.
@@ -171,11 +237,16 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
                 await asyncio.sleep(1.0)
                 with best_effort("checking the tray latch", log):
                     state_machine.reclassify_check()
+                if not tray.running:
+                    shown = None
+                    continue
                 st = _state.get()
                 paused = bool(st and st.input_paused.is_set())
-                current = (state_machine.revision, state_machine.current_state, paused)
+                _sync_paused(state_machine)
+                current = (tray.generation, state_machine.revision,
+                           state_machine.current_state, paused)
                 if current != shown:
-                    link.send({"menu": {"recent": _recent_labels(state_machine),
+                    tray.send({"menu": {"recent": _recent_labels(state_machine),
                                         "status": _status_lines(config, state_machine),
                                         "paused": paused}})
                     shown = current
@@ -185,16 +256,9 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
             await _serve_async(config, lock, shutdown_event=shutdown, tray_state=state_machine)
         finally:
             ticker.cancel()
+            tray.stop(wait=True)
 
-    try:
-        asyncio.run(serve())
-    finally:
-        # stdin closing tells the tray to go.
-        link.close()
-        try:
-            child.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            child.kill()
+    asyncio.run(serve())
 
 
 def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
@@ -303,6 +367,14 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
     # Share the icon back to the worker so it can stop the tray when the
     # MCP transport completes (stdio EOF / client disconnect).
     loop_holder["icon"] = icon
+    tray_ready = threading.Event()
+
+    def on_lock_change(held: bool) -> None:
+        # Before the tray loop runs, _setup reads the lock itself.
+        if tray_ready.is_set():
+            _on_ui_thread(lambda: _apply_visible(icon, held))
+
+    lock.add_listener(on_lock_change)
     # Suppress pystray's own ERROR log if the platform has no tray.
     pystray_logger = logging.getLogger("pystray._base")
     prev_level = pystray_logger.level
@@ -316,7 +388,11 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
         # setup runs once the tray loop is live,
         # where stop() works. The worker marks itself done before it looks
         # for the icon, so whichever thread comes second stops the tray.
-        icon.visible = True  # pystray's default setup, which this replaces
+        # Shown only while this process holds the input lock; from here on
+        # the lock's listener keeps it in step.
+        # pystray calls this on a thread of its own, so via the UI thread.
+        tray_ready.set()
+        _on_ui_thread(lambda: _apply_visible(icon, lock.is_held()))
         if loop_holder.get("done"):
             icon.stop()
 
@@ -341,6 +417,40 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
         # Surface a worker exception if one happened.
         if loop_holder["exc"] is not None:
             raise loop_holder["exc"]
+
+
+def _sync_paused(state_machine: TrayStateMachine) -> None:
+    """The pause flag is shared by every server on the lock and any of their
+    trays may flip it, so the icon follows the flag, not its own toggles."""
+    st = _state.get()
+    paused = bool(st and st.input_paused.is_set())
+    if paused != state_machine.paused:
+        state_machine.set_paused(paused)
+
+
+def _on_ui_thread(fn) -> None:
+    """Run ``fn`` where the tray's UI lives. AppKit is main-thread only;
+    pystray's Windows backend is fine from any thread."""
+    if sys.platform == "darwin":
+        import Foundation
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(fn)
+    else:
+        fn()
+
+
+def _apply_visible(icon, visible: bool) -> None:
+    """Show or hide the icon. On macOS pystray hides only the status item's
+    button, which can leave an empty slot in the menu bar, so the item
+    itself is hidden too."""
+    try:
+        icon.visible = visible
+        item = getattr(icon, "_status_item", None)
+        if item is not None and hasattr(item, "setVisible_"):
+            item.setVisible_(visible)
+        log.info("tray icon %s", "shown" if visible else "hidden")
+    except Exception:
+        log.warning("tray: %s the icon failed", "showing" if visible else "hiding",
+                    exc_info=True)
 
 
 def _load_state_icons(load_px: int = _DEFAULT_LOAD_PX) -> dict[str, Any]:
@@ -552,6 +662,10 @@ def _build_icon(config: MCPConfig, lock: DesktopLock,
     def on_open_dashboard(icon, _item):
         webbrowser.open(_dashboard_url(config))
 
+    def on_release(icon, _item):
+        log.info("tray: releasing the desktop input lock; the next server to act takes it")
+        lock.release()
+
     def on_pause_toggle(icon, _item):
         # Toggle the input-pause flag on the running asyncio loop.
         # The flag is read by the tool wrapper for
@@ -635,6 +749,7 @@ def _build_icon(config: MCPConfig, lock: DesktopLock,
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Re-run permission test", on_perm_test),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Release input lock", on_release),
         pystray.MenuItem("Quit", on_quit),
     )
 
@@ -702,6 +817,7 @@ def _build_icon(config: MCPConfig, lock: DesktopLock,
         while not stop_event.wait(1.0):
             try:
                 state_machine.reclassify_check()
+                _sync_paused(state_machine)
             except Exception:
                 log.exception("latch ticker crashed; continuing")
             gate.flush()

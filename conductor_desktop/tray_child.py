@@ -113,6 +113,7 @@ def main() -> None:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Re-run permission test", lambda *_a: send({"action": "perm_test"})),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Release input lock", lambda *_a: send({"action": "release"})),
             pystray.MenuItem("Quit", on_quit),
         ),
     )

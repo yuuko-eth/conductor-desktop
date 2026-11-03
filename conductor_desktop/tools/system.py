@@ -249,3 +249,18 @@ async def clipboard_set(
     enters long or non-ASCII text exactly, in one step."""
     result = await current().executor.set_clipboard(text)
     return await action_reply(f"set_clipboard({len(text)} chars)", result, observe=False)
+
+
+@tool(kind="observing", lock=False)
+async def release_input() -> str:
+    """Hand the desktop over when you're done driving it: lets go of the
+    desktop input lock so another conductor-desktop (another agent's) can
+    click and type. Your next click or keystroke takes the lock back if
+    nobody else has. Looking at the screen never needs the lock. Without
+    this, the lock goes after a few idle minutes on its own."""
+    st = current()
+    if not st.lock.is_held():
+        return "this server doesn't hold the desktop input lock; nothing to release"
+    st.lock.release()
+    return ("released the desktop input lock: another server can act now; "
+            "the next input call here takes it back if it's free")

@@ -14,6 +14,7 @@ import threading
 import types
 
 import pytest
+from conftest import FakeTrayLock
 
 from conductor_desktop import server, tray
 
@@ -57,5 +58,5 @@ def test_startup_crash_before_the_icon_exists_ends_the_process(monkeypatch):
     monkeypatch.setattr(tray, "_build_icon", build_icon_after_the_worker_died)
 
     with pytest.raises(RuntimeError, match="refuses to start"):
-        tray.run_holder(config=None, lock=None)
+        tray.run_holder(config=None, lock=FakeTrayLock())
     assert not icon.timed_out, "the tray kept the process alive after the server died"

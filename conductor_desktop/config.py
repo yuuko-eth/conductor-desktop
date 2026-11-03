@@ -187,6 +187,11 @@ class MCPConfig:
     # normal use; a test run (scripts/smoke_matrix.py) points at its own file
     # to act alongside an idle holder.
     lock_path: str = ""
+    # Seconds without a tool call after which the holder lets go of the
+    # desktop input lock, so another server can act; the holder takes it
+    # back on its next input call if it's still free. 0 = hold until exit.
+    # Never while input is paused or a call is in flight.
+    lock_idle_release: float = 300.0
     # Audit log — one JSON line per tool call, one file per day, under
     # `audit_dir` (default ~/.conductor-desktop/logs). ON by default: this
     # server is a remote-control surface for a real machine, and the
@@ -506,6 +511,7 @@ class MCPConfig:
             tool_timing=_env_bool("CONDUCTOR_DESKTOP_TOOL_TIMING", False),
             dashboard=_env_bool("CONDUCTOR_DESKTOP_DASHBOARD", False),
             lock_path=os.environ.get("CONDUCTOR_DESKTOP_LOCK_PATH", ""),
+            lock_idle_release=max(0.0, _env_float("CONDUCTOR_DESKTOP_LOCK_IDLE_RELEASE", 300.0)),
             audit=_env_bool("CONDUCTOR_DESKTOP_AUDIT", True),
             audit_dir=os.environ.get("CONDUCTOR_DESKTOP_AUDIT_DIR", ""),
             audit_args=audit_args,
