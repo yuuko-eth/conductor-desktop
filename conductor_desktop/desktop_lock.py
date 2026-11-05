@@ -219,6 +219,22 @@ class DesktopLock:
             self._fd = None
         self._notify(False)
 
+    def held_by_other(self) -> bool:
+        """Whether another live process holds the lock, read from its metadata.
+
+        Never takes the lock to find out: a probing flock, however brief,
+        could make a server that is acquiring for real fail. The holder
+        writes its metadata right after it locks, so this can lag by that
+        much; a crashed holder's leftover metadata names a dead pid.
+        """
+        if self._fd is not None:
+            return False
+        info = self.read_holder_info()
+        if info is None or info.pid == os.getpid():
+            return False
+        import psutil  # not os.kill(pid, 0): on Windows that terminates the process
+        return psutil.pid_exists(info.pid)
+
     def read_holder_info(self) -> HolderInfo | None:
         """Read the holder metadata file, if it exists and parses.
 

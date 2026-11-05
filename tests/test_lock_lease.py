@@ -254,13 +254,17 @@ def test_tray_child_runs_only_while_holding(monkeypatch, tmp_path):
         lock.release()
         await asyncio.sleep(0.5)
         alive_at["released"] = [c.poll() is None for c in children]
+        lock.other = True  # another server took the lock
+        await asyncio.sleep(2.6)  # past one _PRESENCE_CHECK_S
+        alive_at["taken"] = [c.poll() is None for c in children]
 
     monkeypatch.setattr(server, "_serve_async", serve)
     tray._run_holder_with_tray_child(_Config(), lock)
 
     assert alive_at["spectator"] == 0, "a spectator shows no tray"
     assert alive_at["held"] == [True]
-    assert alive_at["released"] == [False], "the tray goes with the lock"
+    assert alive_at["released"] == [True], "released: the icon stays, dimmed"
+    assert alive_at["taken"] == [False], "the tray goes once another server holds the lock"
 
 
 def test_tray_child_menu_offers_release():
@@ -269,6 +273,57 @@ def test_tray_child_menu_offers_release():
     from conductor_desktop import tray_child
     src = Path(tray_child.__file__).read_text()
     assert '"Release input lock"' in src and '{"action": "release"}' in src
+    assert '"Take input lock"' in src and '{"action": "take"}' in src
+
+
+def test_presence_shows_dimmed_after_release_until_another_server_holds(tmp_path):
+
+
+    lock = FakeTrayLock(held=False)
+    presence = tray._Presence(lock)
+    assert presence.check() == (False, False), "never held: no icon"
+    lock.held = True
+    assert presence.check() == (True, False)
+    lock.held = False
+    assert presence.check() == (True, True), "let go: dimmed"
+    lock.other = True
+    assert presence.check() == (False, False), "another server holds it"
+    lock.other = False
+    assert presence.check() == (False, False), "and it doesn't come back by itself"
+
+
+def test_standby_stands_in_for_idle_only():
+    from conductor_desktop.tray_state import (
+        STATE_IDLE,
+        STATE_OBSERVING,
+        STATE_PAUSED,
+        STATE_STANDBY,
+        TrayStateMachine,
+    )
+
+    sm = TrayStateMachine()
+    sm.set_standby(True)
+    assert sm.current_state == STATE_STANDBY
+    call = sm.start("read_screen", klass="observing")
+    assert sm.current_state == STATE_OBSERVING
+    sm.end(call, success=True)
+    assert sm.current_state == STATE_STANDBY
+    sm.set_paused(True)
+    assert sm.current_state == STATE_PAUSED
+    sm.set_paused(False)
+    sm.set_standby(False)
+    assert sm.current_state == STATE_IDLE
+
+
+def test_held_by_other_reads_a_live_holders_metadata(lock_path):
+    lock = DesktopLock(lock_path)
+    assert lock.held_by_other() is False
+    lock.meta_path.write_text(json.dumps({"pid": os.getppid(), "started_at": "x"}))
+    assert lock.held_by_other() is True
+    lock.meta_path.write_text(json.dumps({"pid": os.getpid(), "started_at": "x"}))
+    assert lock.held_by_other() is False, "our own metadata"
+    lock.meta_path.write_text(json.dumps({"pid": 2**22 + 12345, "started_at": "x"}))
+    assert lock.held_by_other() is False, "a dead holder's leftover"
 
 
 def test_meta_is_json(lock_path):

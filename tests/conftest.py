@@ -120,7 +120,11 @@ class FakeTrayLock:
 
     def __init__(self, held: bool = True) -> None:
         self.held = held
+        self.other = False  # another server holds it (held_by_other)
         self.listeners: list = []
+
+    def held_by_other(self) -> bool:
+        return self.other and not self.held
 
     def is_held(self) -> bool:
         return self.held

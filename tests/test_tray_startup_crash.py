@@ -51,7 +51,8 @@ def test_startup_crash_before_the_icon_exists_ends_the_process(monkeypatch):
 
     icon = _FakeIcon()
 
-    def build_icon_after_the_worker_died(config, lock, loop_holder, worker, state):
+    def build_icon_after_the_worker_died(config, lock, loop_holder, worker, state,
+                                         on_tick=None):
         worker.join(timeout=5)  # the race, made certain
         return icon, threading.Event()
 

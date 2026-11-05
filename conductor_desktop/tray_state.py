@@ -44,14 +44,22 @@ STATE_OBSERVING = "observing"
 STATE_ACTING = "acting"
 STATE_ERRORED = "errored"
 STATE_PAUSED = "paused"
+# The server let go of the input lock (idle release, or "Release input
+# lock") and nobody else holds it: the icon stays, dimmed, so the operator
+# still has the menu. The next input call, or "Take input lock", takes it back.
+STATE_STANDBY = "standby"
 
 ALL_STATES = (
     STATE_IDLE, STATE_OBSERVING, STATE_ACTING, STATE_ERRORED, STATE_PAUSED,
+    STATE_STANDBY,
 )
 
 
 # Precedence for current_state when multiple inputs apply at once:
-#   errored > paused > acting > observing > idle
+#   errored > paused > acting > observing > standby > idle
+#
+# Standby only stands in for idle: read-only calls still show as observing
+# while the lock is free, and an acting call takes the lock first.
 #
 # Errored wins because it's transient and signals something the
 # operator should look at. Paused beats the rest because the operator
@@ -128,6 +136,8 @@ class TrayStateMachine:
         self._last_error_at: dict[str, float] = {}
         # Operator pause toggle (set/cleared from the tray menu thread).
         self._paused: bool = False
+        # Input lock released while this server's icon stays (see STATE_STANDBY).
+        self._standby: bool = False
         self._observer: Callable[[str], None] | None = None
         self._last_emitted: str = STATE_IDLE
         # Bumped on every start / end / pause, so the tray can rebuild its
@@ -192,7 +202,7 @@ class TrayStateMachine:
     def current_state(self) -> str:
         """Compute the state to display right now.
 
-        Precedence: errored > paused > acting > observing > idle.
+        Precedence: errored > paused > acting > observing > standby > idle.
         See ``ALL_STATES`` for the rationale.
         """
         now_mono = time.monotonic()
@@ -202,7 +212,7 @@ class TrayStateMachine:
             if self._paused:
                 return STATE_PAUSED
             if not self._in_flight:
-                return STATE_IDLE
+                return STATE_STANDBY if self._standby else STATE_IDLE
             for call in self._in_flight.values():
                 if call.klass == "acting":
                     return STATE_ACTING
@@ -220,6 +230,19 @@ class TrayStateMachine:
         """
         with self._lock:
             self._paused = bool(paused)
+            self._revision += 1
+        self._maybe_emit()
+
+    @property
+    def standby(self) -> bool:
+        return self._standby
+
+    def set_standby(self, standby: bool) -> None:
+        """Mark the input lock released (True) or held (False) for the icon."""
+        with self._lock:
+            if self._standby == bool(standby):
+                return
+            self._standby = bool(standby)
             self._revision += 1
         self._maybe_emit()
 

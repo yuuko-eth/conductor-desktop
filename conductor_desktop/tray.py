@@ -1,9 +1,11 @@
 """System tray icon for the ``conductor-desktop`` process holding the input lock.
 
 Every server runs this layout, and the icon follows the lock: it shows while
-this process holds the desktop input lock and goes when it lets go (idle
-release, "Release input lock", quit), so there is one icon per desktop, on
-the server that can act. A server that takes the lock later shows its own.
+this process holds the desktop input lock. When it lets go (idle release,
+"Release input lock") the icon stays, dimmed ("standby"), with "Take input
+lock" in the menu, until another server takes the lock and shows its own, or
+this one quits. A server that never held the lock shows none, so a desktop
+has one icon.
 
 Threading: pystray's macOS backend (and arguably others) wants the main
 thread for its event loop. The MCP asyncio loop therefore runs on a
@@ -49,6 +51,10 @@ from .tray_state import (
     STATE_IDLE,
     TrayStateMachine,
 )
+
+# How often a server with a dimmed (standby) icon checks whether another
+# server took the input lock, so its own icon can go.
+_PRESENCE_CHECK_S = 2.0
 
 log = logging.getLogger("conductor.mcp.tray")
 
@@ -216,6 +222,8 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
             elif action == "release":
                 log.info("tray: releasing the desktop input lock; the next server to act takes it")
                 lock.release()
+            elif action == "take":
+                _take_lock_from_tray(loop)
             elif action == "pause":
                 toggle_pause()
             elif action == "perm_test":
@@ -223,32 +231,50 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
 
+        presence = _Presence(lock)
+
+        def refresh_presence() -> None:
+            # On the loop's thread: the tray process runs while the icon shows.
+            visible, standby = presence.check()
+            state_machine.set_standby(standby)
+            if visible:
+                tray.start()
+            else:
+                tray.stop()
+
         def on_lock_change(held: bool) -> None:
-            loop.call_soon_threadsafe(tray.start if held else tray.stop)
+            loop.call_soon_threadsafe(refresh_presence)
 
         lock.add_listener(on_lock_change)
-        if lock.is_held():
-            tray.start()
+        refresh_presence()
 
         async def tick() -> None:
-            # The latch's expiry, and the submenus when something changed.
+            # The latch's expiry, whether the icon still shows, and the
+            # submenus when something changed.
             shown = None
+            last_presence = 0.0
             while True:
                 await asyncio.sleep(1.0)
                 with best_effort("checking the tray latch", log):
                     state_machine.reclassify_check()
+                now = time.monotonic()
+                if now - last_presence >= _PRESENCE_CHECK_S:
+                    last_presence = now
+                    with best_effort("checking the tray icon's presence", log):
+                        refresh_presence()
                 if not tray.running:
                     shown = None
                     continue
                 st = _state.get()
                 paused = bool(st and st.input_paused.is_set())
                 _sync_paused(state_machine)
+                held = lock.is_held()
                 current = (tray.generation, state_machine.revision,
-                           state_machine.current_state, paused)
+                           state_machine.current_state, paused, held)
                 if current != shown:
                     tray.send({"menu": {"recent": _recent_labels(state_machine),
                                         "status": _status_lines(config, state_machine),
-                                        "paused": paused}})
+                                        "paused": paused, "held": held}})
                     shown = current
 
         ticker = loop.create_task(tick())
@@ -259,6 +285,47 @@ def _run_holder_with_tray_child(config: MCPConfig, lock: DesktopLock) -> None:
             tray.stop(wait=True)
 
     asyncio.run(serve())
+
+
+class _Presence:
+    """Whether this server's icon shows, and whether it is dimmed.
+
+    Shown while this server holds the input lock. After it lets go, shown
+    dimmed (standby) until another server holds the lock; from then on
+    hidden, until this one takes the lock again. Thread-safe enough for its
+    callers: plain attribute writes, one writer at a time in practice.
+    """
+
+    def __init__(self, lock: DesktopLock) -> None:
+        self._lock = lock
+        self._was_holder = False
+
+    def check(self) -> tuple[bool, bool]:
+        """``(visible, standby)`` right now."""
+        if self._lock.is_held():
+            self._was_holder = True
+            return True, False
+        if self._was_holder and not self._lock.held_by_other():
+            return True, True
+        self._was_holder = False
+        return False, False
+
+
+def _take_lock_from_tray(loop_holder_or_loop) -> None:
+    """Run the server's take_input_lock on its loop (tray menu → loop thread)."""
+    loop = (loop_holder_or_loop.get("loop") if isinstance(loop_holder_or_loop, dict)
+            else loop_holder_or_loop)
+    if loop is None:
+        return
+
+    def take() -> None:
+        from .server import take_input_lock
+        st = _state.get()
+        if st is not None and not take_input_lock(st):
+            log.warning("tray: another server holds the desktop input lock; not taken")
+
+    with best_effort("taking the input lock from the tray", log):
+        loop.call_soon_threadsafe(take)
 
 
 def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
@@ -361,18 +428,31 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
     # build a tray that might call into them.
     ready.wait()
 
+    presence = _Presence(lock)
+    shown_visible: dict[str, bool | None] = {"v": None}
+    tray_ready = threading.Event()
+
+    def refresh_presence() -> None:
+        # From the lock's listener, the tray's setup and the latch ticker.
+        if not tray_ready.is_set():
+            return
+        visible, standby = presence.check()
+        state_machine.set_standby(standby)
+        if visible != shown_visible["v"]:
+            shown_visible["v"] = visible
+            _on_ui_thread(lambda: _apply_visible(icon, visible))
+
     icon, latch_ticker_stop = _build_icon(
         config, lock, loop_holder, worker, state_machine,
+        on_tick=refresh_presence,
     )
     # Share the icon back to the worker so it can stop the tray when the
     # MCP transport completes (stdio EOF / client disconnect).
     loop_holder["icon"] = icon
-    tray_ready = threading.Event()
 
     def on_lock_change(held: bool) -> None:
         # Before the tray loop runs, _setup reads the lock itself.
-        if tray_ready.is_set():
-            _on_ui_thread(lambda: _apply_visible(icon, held))
+        refresh_presence()
 
     lock.add_listener(on_lock_change)
     # Suppress pystray's own ERROR log if the platform has no tray.
@@ -388,11 +468,12 @@ def run_holder(config: MCPConfig, lock: DesktopLock) -> None:
         # setup runs once the tray loop is live,
         # where stop() works. The worker marks itself done before it looks
         # for the icon, so whichever thread comes second stops the tray.
-        # Shown only while this process holds the input lock; from here on
-        # the lock's listener keeps it in step.
+        # Shown while this process holds the input lock, dimmed after it
+        # lets go (_Presence); from here on the lock's listener and the
+        # latch ticker keep it in step.
         # pystray calls this on a thread of its own, so via the UI thread.
         tray_ready.set()
-        _on_ui_thread(lambda: _apply_visible(icon, lock.is_held()))
+        refresh_presence()
         if loop_holder.get("done"):
             icon.stop()
 
@@ -649,7 +730,7 @@ def _dashboard_url(config: MCPConfig) -> str:
 
 def _build_icon(config: MCPConfig, lock: DesktopLock,
                 loop_holder: dict[str, Any], worker: threading.Thread,
-                state_machine: TrayStateMachine):
+                state_machine: TrayStateMachine, on_tick=None):
     import pystray
 
     icons = _load_state_icons(_DEFAULT_LOAD_PX)
@@ -749,7 +830,10 @@ def _build_icon(config: MCPConfig, lock: DesktopLock,
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Re-run permission test", on_perm_test),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Release input lock", on_release),
+        pystray.MenuItem("Take input lock", lambda *_a: _take_lock_from_tray(loop_holder),
+                         visible=lambda _item: not lock.is_held()),
+        pystray.MenuItem("Release input lock", on_release,
+                         visible=lambda _item: lock.is_held()),
         pystray.MenuItem("Quit", on_quit),
     )
 
@@ -814,10 +898,15 @@ def _build_icon(config: MCPConfig, lock: DesktopLock,
 
     def _latch_ticker() -> None:
         shown: tuple[int, str] | None = None
+        last_presence = 0.0
         while not stop_event.wait(1.0):
             try:
                 state_machine.reclassify_check()
                 _sync_paused(state_machine)
+                now = time.monotonic()
+                if on_tick is not None and now - last_presence >= _PRESENCE_CHECK_S:
+                    last_presence = now
+                    on_tick()
             except Exception:
                 log.exception("latch ticker crashed; continuing")
             gate.flush()

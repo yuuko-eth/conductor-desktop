@@ -618,6 +618,18 @@ def release_if_idle(st: _state.State, now: float | None = None) -> bool:
     return True
 
 
+def take_input_lock(st: _state.State) -> bool:
+    """The tray's "Take input lock": hold the desktop again now. Counts as
+    activity, so idle release doesn't let go again on its next check.
+    Call on the event loop's thread. False when another server holds it."""
+    if not st.lock.try_acquire():
+        return False
+    st.last_activity = time.monotonic()
+    st.idle_released_at = None
+    log.info("desktop input lock taken back from the tray")
+    return True
+
+
 def _start_autorelease_drain() -> asyncio.Task | None:
     """On macOS, drain what PyObjC calls on this loop autorelease."""
     if sys.platform != "darwin":

@@ -10,7 +10,8 @@ context crashed sooner. So GTK lives here and libatspi in the server.
 
 The server (tray.py, ``_run_holder_with_tray_child``) writes JSON lines to
 stdin: one config line, then ``{"state": ...}`` for each icon state and
-``{"menu": {...}}`` for the submenus. This writes ``{"action": ...}`` lines
+``{"menu": {...}}`` for the submenus and whether the server holds the input
+lock (``held``: "Take" or "Release input lock"). This writes ``{"action": ...}`` lines
 to stdout for the menu items the server acts on. stdin closing means the
 server is gone, and the tray goes with it.
 """
@@ -34,11 +35,13 @@ class Menu:
         self.recent: list[str] = ["(no calls yet)"]
         self.status: list[str] = []
         self.paused = False
+        self.held = True
 
     def update(self, snap: dict) -> None:
         self.recent = list(snap.get("recent") or self.recent)
         self.status = list(snap.get("status") or self.status)
         self.paused = bool(snap.get("paused", self.paused))
+        self.held = bool(snap.get("held", self.held))
 
 
 def handle(line: str, gate, menu: Menu, refresh) -> bool:
@@ -113,7 +116,10 @@ def main() -> None:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Re-run permission test", lambda *_a: send({"action": "perm_test"})),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Release input lock", lambda *_a: send({"action": "release"})),
+            pystray.MenuItem("Take input lock", lambda *_a: send({"action": "take"}),
+                             visible=lambda _item: not menu.held),
+            pystray.MenuItem("Release input lock", lambda *_a: send({"action": "release"}),
+                             visible=lambda _item: menu.held),
             pystray.MenuItem("Quit", on_quit),
         ),
     )
