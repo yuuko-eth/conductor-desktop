@@ -545,6 +545,7 @@ async def _serve_async(config: MCPConfig, lock: DesktopLock,
 
     idle_task = (asyncio.create_task(_idle_release_loop(st), name="lock-idle-release")
                  if lock.idle_release > 0 else None)
+    drain_task = _start_autorelease_drain()
     try:
         if config.transport == "stdio":
             transport_coro = mcp.run_stdio_async()
@@ -578,6 +579,8 @@ async def _serve_async(config: MCPConfig, lock: DesktopLock,
     finally:
         if idle_task is not None:
             idle_task.cancel()
+        if drain_task is not None:
+            drain_task.cancel()
         if dashboard_sidecar_task is not None and not dashboard_sidecar_task.done():
             dashboard_sidecar_task.cancel()
             try:
@@ -613,6 +616,19 @@ def release_if_idle(st: _state.State, now: float | None = None) -> bool:
     log.info("desktop input lock released after %.0f s idle; this server takes it "
              "back on its next input call if it is still free", idle)
     return True
+
+
+def _start_autorelease_drain() -> asyncio.Task | None:
+    """On macOS, drain what PyObjC calls on this loop autorelease."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import objc  # noqa: F401
+
+        from .core.backends.macos import drain_loop_autoreleased
+    except ImportError:
+        return None
+    return asyncio.create_task(drain_loop_autoreleased(), name="autorelease-drain")
 
 
 async def _idle_release_loop(st: _state.State) -> None:

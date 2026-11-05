@@ -79,3 +79,34 @@ def test_everything_else_pays_nothing_for_them(role):
     # 600 of their AXCells do, so two round trips per non-cell buy nothing.
     _raw, read = _describe(role)
     assert "AXRowIndexRange" not in read and "AXColumnIndexRange" not in read
+
+
+# ── Worker-thread AX work drains an autorelease pool ───────────────
+# asyncio's worker threads never drain one on their own, so every
+# autoreleased AXUIElement and child array a walk touched stayed alive:
+# ~5 MB per ui_find on a Chrome window, 1.2M AXUIElements in ``heap``.
+
+@pytest.mark.parametrize("entry, sync_name, args", [
+    ("ui_walk", "_ui_walk_sync", ("Chrome",)),
+    ("ui_act", "_ui_act_sync", (object(), "press", {})),
+])
+def test_worker_ax_calls_run_inside_an_autorelease_pool(monkeypatch, entry, sync_name, args):
+    import asyncio
+    import contextlib
+
+    objc = pytest.importorskip("objc")
+    depth = []
+    inside = []
+
+    @contextlib.contextmanager
+    def pool():
+        depth.append(1)
+        try:
+            yield
+        finally:
+            depth.pop()
+
+    monkeypatch.setattr(objc, "autorelease_pool", pool)
+    monkeypatch.setattr(macos, sync_name, lambda *a: inside.append(bool(depth)) or "done")
+    assert asyncio.run(getattr(macos, entry)(*args)) == "done"
+    assert inside == [True]

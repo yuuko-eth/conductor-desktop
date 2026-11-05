@@ -376,16 +376,17 @@ async def _activate_app(app) -> bool:
     still works because osascript has broader TCC-granted privileges.
     """
     from AppKit import NSApplicationActivateIgnoringOtherApps
-    # 1. New API: plain activate() with no flags (macOS 14+).
-    with best_effort("NSRunningApplication.activate", log):
-        if hasattr(app, "activate") and app.activate():
-            return True
-    # 2. Legacy flag — sometimes still effective on older macOS.
-    with best_effort("activateWithOptions_", log):
-        if app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps):
-            return True
+    with _autorelease_pool():
+        # 1. New API: plain activate() with no flags (macOS 14+).
+        with best_effort("NSRunningApplication.activate", log):
+            if hasattr(app, "activate") and app.activate():
+                return True
+        # 2. Legacy flag — sometimes still effective on older macOS.
+        with best_effort("activateWithOptions_", log):
+            if app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps):
+                return True
+        name = str(app.localizedName() or "")
     # 3. AppleScript fallback — reliable when Accessibility is granted.
-    name = app.localizedName() or ""
     if name:
         try:
             script = "on run argv\ntell application (item 1 of argv) to activate\nend run"
@@ -394,6 +395,40 @@ async def _activate_app(app) -> bool:
         except (OSError, TimeoutError):
             pass
     return False
+
+
+def _focus_candidates(needle: str, windows: list[dict], workspace, running_app) -> list:
+    """Apps to try activating for ``focus_window(title=...)``, best first.
+
+    Strategy 2a: apps whose localizedName contains the needle. Strategy 2b:
+    apps owning a window whose title (kCGWindowName) or owner contains it,
+    which covers a tab title or document name.
+    """
+    candidates = []
+    seen_pids: set[int] = set()
+    for app in workspace.sharedWorkspace().runningApplications():
+        try:
+            app_pid = int(app.processIdentifier())
+        except Exception:
+            log.debug("reading an app's pid failed", exc_info=True)
+            continue
+        if app_pid in seen_pids:
+            continue
+        name = app.localizedName() or ""
+        if needle in name.lower():
+            candidates.append(app)
+            seen_pids.add(app_pid)
+    for w in windows:
+        win_title = (w.get("title") or "").lower()
+        owner = (w.get("process_name") or "").lower()
+        if needle in win_title or needle in owner:
+            wpid = int(w.get("pid", 0) or 0)
+            if wpid and wpid not in seen_pids:
+                app = running_app.runningApplicationWithProcessIdentifier_(wpid)
+                if app is not None:
+                    candidates.append(app)
+                    seen_pids.add(wpid)
+    return candidates
 
 
 async def focus_window(title: str | None = None, pid: int | None = None) -> bool:
@@ -417,7 +452,8 @@ async def focus_window(title: str | None = None, pid: int | None = None) -> bool
 
     # Strategy 1: direct PID activation.
     if pid:
-        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        with _autorelease_pool():
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
         if app is None:
             return False
         return await _activate_app(app)
@@ -425,41 +461,16 @@ async def focus_window(title: str | None = None, pid: int | None = None) -> bool
     if not title:
         return False
 
-    needle = title.lower()
-    candidates = []
-    seen_pids: set[int] = set()
-
-    # Strategy 2a: match app localizedName.
-    for app in NSWorkspace.sharedWorkspace().runningApplications():
-        try:
-            app_pid = int(app.processIdentifier())
-        except Exception:
-            log.debug("reading an app's pid failed", exc_info=True)
-            continue
-        if app_pid in seen_pids:
-            continue
-        name = app.localizedName() or ""
-        if needle in name.lower():
-            candidates.append(app)
-            seen_pids.add(app_pid)
-
-    # Strategy 2b: match window title (kCGWindowName). Covers the case
-    # where the user searches for a tab title or document name.
+    # Window titles first: the AppKit reads below then run in one
+    # autorelease pool with no await inside it.
     try:
         windows = await list_windows()
     except BackendError as e:  # app names still match
         log.debug("focus_window without window titles: %s", e)
         windows = []
-    for w in windows:
-        win_title = (w.get("title") or "").lower()
-        owner = (w.get("process_name") or "").lower()
-        if needle in win_title or needle in owner:
-            wpid = int(w.get("pid", 0) or 0)
-            if wpid and wpid not in seen_pids:
-                app = NSRunningApplication.runningApplicationWithProcessIdentifier_(wpid)
-                if app is not None:
-                    candidates.append(app)
-                    seen_pids.add(wpid)
+    with _autorelease_pool():
+        candidates = _focus_candidates(title.lower(), windows, NSWorkspace,
+                                       NSRunningApplication)
 
     # Try each candidate until one activates successfully.
     for app in candidates:
@@ -987,9 +998,57 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pooled(fn, *args):
+    """Call ``fn`` inside an autorelease pool, for AX work on a worker thread.
+
+    asyncio's worker threads never drain one: they live as long as the
+    server, and only an NSRunLoop drains per tick. Without a pool, every
+    autoreleased AXUIElement, child array and enumerator an AX walk touches
+    stays alive until the thread exits. Measured on macOS 26.5 against a
+    Chrome window: ~5 MB per ui_find, a footprint past 450 MB in a few
+    minutes and 1.2M AXUIElements in ``heap``; flat with the pool.
+    """
+    with _autorelease_pool():
+        return fn(*args)
+
+
+async def drain_loop_autoreleased(period: float = 5.0) -> None:
+    """Keep an autorelease pool open on the event-loop thread and drain it
+    every ``period`` seconds, until cancelled.
+
+    Nothing else drains one on that thread: it runs no NSRunLoop, so what
+    list_windows, list_screens, focus_window and friends autorelease
+    (NSRunningApplications, bridged window dicts, enumerators) would stay
+    until the thread exits. Pools are a per-thread stack and every other
+    pool on this thread opens and closes inside one task step, so when this
+    task runs, its pool is the top one and draining it is safe. Objects
+    Python still holds are retained by their proxies and survive.
+    """
+    import objc
+
+    pool = objc.autorelease_pool()
+    pool.__enter__()
+    try:
+        while True:
+            await asyncio.sleep(period)
+            pool.__exit__(None, None, None)
+            pool = objc.autorelease_pool()
+            pool.__enter__()
+    finally:
+        pool.__exit__(None, None, None)
+
+
+def _autorelease_pool():
+    """``objc.autorelease_pool()``. On the event-loop thread, never across an
+    await: pools are a per-thread stack, and another task could push its
+    own in between."""
+    import objc
+    return objc.autorelease_pool()
+
+
 async def ui_act(locator, verb: str, params: dict, timeout: float = 5.0):
     """Resolve ``locator`` and run ``verb`` on it; returns a ``core.ui.act.ActOutcome``."""
-    return await asyncio.to_thread(_ui_act_sync, locator, verb, params, timeout)
+    return await asyncio.to_thread(_pooled, _ui_act_sync, locator, verb, params, timeout)
 
 
 def _ui_act_sync(loc, verb, params, timeout):
@@ -1220,8 +1279,8 @@ async def ui_walk(
     ``extract_table``'s row-enumerating one. The ``ui_*`` tools leave it alone.
     """
     return await asyncio.to_thread(
-        _ui_walk_sync, title, depth, max_children, include_menubar, timeout, web_search,
-        source,
+        _pooled, _ui_walk_sync, title, depth, max_children, include_menubar, timeout,
+        web_search, source,
     )
 
 
