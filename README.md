@@ -59,7 +59,7 @@ To tell the agent about your machine (its language, the apps it should use, what
 
 ## Status
 
-Pre-release (0.1.0). Known issues:
+1.0.0. Known issues:
 
 - On Windows, `read_grid` returns only the rows on screen.
 - From macOS, typing into a remote-desktop or VM window sends the wrong characters; drive the remote side with its own conductor-desktop instead.

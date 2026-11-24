@@ -15,7 +15,7 @@ import time
 
 from mcp.server.fastmcp import FastMCP
 
-from . import ENV_PREFIX, LEGACY_ENV_RENAMED, tooling
+from . import ENV_PREFIX, LEGACY_ENV_RENAMED, __version__, tooling
 from . import state as _state
 from .audit import from_config as _audit_from_config
 from .config import MCPConfig
@@ -44,6 +44,9 @@ def build_mcp(config: MCPConfig) -> FastMCP:
 
     mcp = FastMCP("conductor-desktop", instructions=INSTRUCTIONS,
                   host=config.host, port=config.port)
+    # FastMCP takes no version, and without one serverInfo reports the MCP
+    # SDK's (1.27.1), not ours.
+    mcp._mcp_server.version = __version__
     tooling.register(mcp, config)
     return mcp
 
@@ -58,7 +61,7 @@ async def _build_state(config: MCPConfig, lock: DesktopLock) -> State:
     grounder, describe_grounder, region_grounder, enumerator = _build_grounders(config)
     mobile_registry = await _build_mobile_registry(config)
     audit = _audit_from_config(config)
-    audit.start(platform=executor.host.platform)
+    audit.start(version=__version__, platform=executor.host.platform)
     state = State(
         config=config, executor=executor, grounder=grounder,
         describe_grounder=describe_grounder,

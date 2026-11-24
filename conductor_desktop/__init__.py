@@ -3,6 +3,8 @@ grounder, served over the Model Context Protocol."""
 
 import os as _os
 
+__version__ = "1.0.0"
+
 ENV_PREFIX = "CONDUCTOR_DESKTOP_"
 # The variables were CONDUCTOR_MCP_* before the rename. Move any that are
 # still set onto the new name (an explicitly set new name wins) at import,
